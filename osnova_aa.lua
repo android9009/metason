@@ -447,8 +447,8 @@ g.roundend_enable = gui.Checkbox(TAB, "aa_roundend_enable", "Enable Round End AA
 
 -- Scripts Groupbox position/size editboxes (inside the Groupbox itself)
 if scriptsgb then
-g.scripts_x = gui.Editbox(scriptsgb, "scripts_gb_x", "16")
-g.scripts_y = gui.Editbox(scriptsgb, "scripts_gb_y", "16")
+g.scripts_x = gui.Editbox(scriptsgb, "scripts_gb_x", "159")
+g.scripts_y = gui.Editbox(scriptsgb, "scripts_gb_y", "130")
 g.scripts_w = gui.Editbox(scriptsgb, "scripts_gb_w", "287")
 g.scripts_h = gui.Editbox(scriptsgb, "scripts_gb_h", "200")
 end
