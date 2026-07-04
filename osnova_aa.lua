@@ -2775,20 +2775,33 @@ local function handle_blockbot(cmd)
         local forward = math.cos(math.rad(move_yaw - va.y))
         local side = math.sin(math.rad(move_yaw - va.y))
         
-        -- Полностью переходим на логику Air Stop: 
-        -- Выключаем авто-стоп и прожимаем физические клавиши через FFI.
-        -- Никаких SetForwardMove/SetSideMove, только эмуляция клавиатуры.
-        as_auto_off()
+        -- У CS2 есть особенность: если ты просто эмулируешь нажатия через FFI,
+        -- но в UserCmd (самом пакете движения) стоят нули, игра может игнорировать ввод.
+        -- Поэтому мы задаем максимальную скорость в самом пакете:
+        cmd:SetForwardMove(forward > 0 and 450 or (forward < 0 and -450 or 0))
+        cmd:SetSideMove(side > 0 and 450 or (side < 0 and -450 or 0))
 
+        -- И ПЛЮС прожимаем кнопки в UserCmd (биты кнопок), чтобы игра видела активность:
+        local b = cmd:GetButtons()
+        if forward > 0.1 then b = bit.bor(b, IN_FORWARD) end
+        if forward < -0.1 then b = bit.bor(b, IN_BACK) end
+        if side > 0.1 then b = bit.bor(b, IN_LEFT) end
+        if side < -0.1 then b = bit.bor(b, IN_RIGHT) end
+        cmd:SetButtons(b)
+
+        -- И ПЛЮС твой метод через FFI (для анимаций и обхода):
+        as_auto_off()
         as_set_script_keys(
-            forward > 0.45,  -- W
-            forward < -0.45, -- S
-            side > 0.45,     -- A
-            side < -0.45     -- D
+            forward > 0.45,
+            forward < -0.45,
+            side > 0.45,
+            side < -0.45
         )
         
         AS.active = true
     else
+        cmd:SetForwardMove(0)
+        cmd:SetSideMove(0)
         as_release(true)
     end
 end
