@@ -44,8 +44,15 @@ REGIONTAB = REGIONTAB or MISCROOT
 
 -- Scripts Tab (inside Lua Scripts section)
 local SCRIPTSTAB
-pcall(function() SCRIPTSTAB = gui.Tab(gui.Reference("Lua Scripts"), "aw_scripts_tab", "Scripts") end)
-SCRIPTSTAB = SCRIPTSTAB or MISCTAB
+local lua_ref_names = {"Lua Scripts", "Lua", "LUA", "Scripts", "LuaScript"}
+for _, refname in ipairs(lua_ref_names) do
+    if not SCRIPTSTAB then
+        pcall(function()
+            local ref = gui.Reference(refname)
+            if ref then SCRIPTSTAB = gui.Tab(ref, "aw_scripts_tab", "Scripts") end
+        end)
+    end
+end
 
 -- ============================================================
 -- constants
@@ -442,12 +449,18 @@ g.builder_mode = gui.Combobox(TAB, "aa_builder_mode", "AA Builder", "Builder", "
 g.defensive_enable = gui.Checkbox(TAB, "aa_defensive_enable", "Enable Defensive Builder", false)
 g.roundend_enable = gui.Checkbox(TAB, "aa_roundend_enable", "Enable Round End AA", false)
 
--- Scripts Tab: Indicator Settings
-local scriptsgroup = gui.Groupbox(SCRIPTSTAB, "Indicator Settings", 16, 16, 287.5, 200)
-g.ind_x = gui.Slider(scriptsgroup, "scripts_ind_x", "Indicator X", 0, -500, 500, 1)
-g.ind_y = gui.Slider(scriptsgroup, "scripts_ind_y", "Indicator Y", 28, -500, 500, 1)
-g.ind_width = gui.Slider(scriptsgroup, "scripts_ind_width", "Indicator Width", 140, 50, 300, 1)
-g.ind_height = gui.Slider(scriptsgroup, "scripts_ind_height", "Indicator Height", 12, 8, 24, 1)
+-- Scripts Tab: settings
+if SCRIPTSTAB then
+g.ind_x = gui.Slider(SCRIPTSTAB, "scripts_ind_x", "Indicator X", 0, -500, 500, 1)
+g.ind_y = gui.Slider(SCRIPTSTAB, "scripts_ind_y", "Indicator Y", 28, -500, 500, 1)
+g.ind_width = gui.Slider(SCRIPTSTAB, "scripts_ind_width", "Indicator Width", 140, 50, 300, 1)
+g.ind_height = gui.Slider(SCRIPTSTAB, "scripts_ind_height", "Indicator Height", 12, 8, 24, 1)
+else
+g.ind_x = { GetValue = function() return 0 end, SetValue = function() end }
+g.ind_y = { GetValue = function() return 28 end, SetValue = function() end }
+g.ind_width = { GetValue = function() return 140 end, SetValue = function() end }
+g.ind_height = { GetValue = function() return 12 end, SetValue = function() end }
+end
 
 -- Round End AA Yaw
 g.re_yaw = gui.Combobox(TAB, "aa_re_yaw", "Round End Yaw", "Off", "Static", "Random", "Spin")
