@@ -7,6 +7,35 @@ _G.__AA = _G.__AA or {}
 -- Plus pitch, manual directions, conditions, on-screen indicator.
 -- Sets view angles in PreMove (matches the working Aimware example).
 
+-- ============================================================
+-- Централизованная база байтовых паттернов (osnova_signatures.lua).
+-- Оффсеты netvar-полей (dwEntityList, dwLocalPlayerController и т.д.)
+-- по-прежнему приходят из AWCHANGER_API.offsets (считает их osnova_skin.lua
+-- через ту же централизованную базу) - тут ничего менять не нужно.
+-- Этот блок нужен только для паттернов, которые ищутся напрямую в этом
+-- файле (сейчас - VM_SIG для viewmodel offset хука). Если файл недоступен -
+-- всё падает на прежние hardcoded паттерны, чит не ломается.
+-- ============================================================
+local AA_SIG = nil
+pcall(function()
+	local src = http.Get("https://raw.githubusercontent.com/android9009/metason/main/osnova_signatures.lua")
+	if type(src) == "string" and #src > 500 then
+		local chunk = loadstring(src, "=osnova_signatures")
+		if chunk then
+			local ok, mod = pcall(chunk)
+			if ok and type(mod) == "table" then AA_SIG = mod end
+		end
+	end
+end)
+
+local function aa_sig_pattern(name, fallback)
+	if AA_SIG then
+		local e = AA_SIG.get(name)
+		if e and e.pattern then return e.pattern end
+	end
+	return fallback
+end
+
 local TAB  = gui.Reference("Ragebot", "Anti-Aim")
 -- manual directions / conditions / indicator live in the Auto Peek tab
 local TAB2 = gui.Reference("Ragebot", "Auto Peek")
@@ -100,7 +129,11 @@ MANUAL = {
 local VM = {}
 do
 	local ffi = rawget(_G, "ffi")
-	local VM_SIG = "E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? 84 C0 74 11 F3 0F 10 45 B0"
+	-- Не найден точно такой же паттерн в централизованной базе (CalcViewmodel/
+	-- CalcViewmodelView - другие функции с другими паттернами), поэтому тут
+	-- просто hardcoded паттерн как раньше. aa_sig_pattern оставлен на будущее,
+	-- если этот паттерн когда-нибудь появится в базе под своим именем.
+	local VM_SIG = aa_sig_pattern("ViewmodelOffsetHook", "E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? 84 C0 74 11 F3 0F 10 45 B0")
 	local page, match, origRel, ok = nil, nil, nil, false
 
 	local function r_i32(a) return ffi.cast("int32_t*", a)[0] end
