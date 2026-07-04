@@ -2673,12 +2673,13 @@ end
 
 -- ============================================================
 -- Block Bot (Miscellaneous > Features)
--- Automatically blocks the closest enemy by predicting their movement
--- and standing in front of them. Uses Windows API (keybd_event) like Air Stop.
+-- Automatically blocks the closest enemy by predicting their movement.
+-- Uses Windows API (keybd_event) like Air Stop.
+-- Logic ported from working Aimware blockbot example.
 -- ============================================================
 local BB = {
     target = nil,
-    last_log = 0,
+    method = 0, -- 0=NULL, 1=HEAD, 2=X, 3=Y
 }
 
 local BB_FFI = rawget(_G, "ffi")
@@ -2746,224 +2747,205 @@ local function bb_release()
     bb_restore_user_keys()
 end
 
--- Find closest enemy on same height level
-local function bb_get_closest_enemy(lp)
-    local my = origin_of(lp)
-    if not my then return nil, 999999 end
+-- BB method constants
+local BB_NULL = 0
+local BB_HEAD = 1
+local BB_X    = 2
+local BB_Y    = 3
+
+-- Acquire closest target (ported from working example)
+local function bb_acquire_target(lp, dist_limit)
+    dist_limit = math.abs(dist_limit or 500)
+    if not lp then return nil end
     
-    local myteam = field_int(lp, "m_iTeamNum")
-    local closest = nil
-    local closest_dist = 999999
+    local alive = false
+    pcall(function() alive = lp:IsAlive() end)
+    if not alive then return nil end
     
-    for i = 1, #esp_targets do
-        local e = esp_targets[i]
-        if e and e ~= lp and is_live_player(e) then
-            local team = field_int(e, "m_iTeamNum")
-            if not (myteam ~= 0 and team ~= 0 and team == myteam) then
-                local p = origin_of(e)
-                if p then
-                    local height_diff = math.abs(my.z - p.z)
-                    if height_diff < 100 then
-                        local dx = p.x - my.x
-                        local dy = p.y - my.y
-                        local dist_2d = math.sqrt(dx * dx + dy * dy)
-                        if dist_2d < closest_dist then
-                            closest_dist = dist_2d
-                            closest = e
-                        end
-                    end
+    local vecOrigin = lp:GetAbsOrigin()
+    local iEntIndex = lp:GetIndex()
+    local flClosestDistance = dist_limit + 1
+    local pClosestTarget = nil
+    
+    local players = entities.FindByClass("C_CSPlayerPawn")
+    if not players then return nil end
+    
+    for i = 1, #players do
+        local pTarget = players[i]
+        local ok = pcall(function()
+            if pTarget:GetIndex() ~= iEntIndex and pTarget:IsAlive() and pTarget:GetTeamNumber() > 1 then
+                local flDistance = (pTarget:GetAbsOrigin() - vecOrigin):Length()
+                if flDistance < flClosestDistance then
+                    flClosestDistance = flDistance
+                    pClosestTarget = pTarget
                 end
             end
-        end
+        end)
     end
     
-    return closest, closest_dist
+    return (flClosestDistance <= dist_limit) and pClosestTarget or nil
 end
-
--- Find enemy we're standing on (head-lock mode)
-local function bb_get_enemy_under_us(lp)
-    local my = origin_of(lp)
-    if not my then return nil end
-    
-    local myteam = field_int(lp, "m_iTeamNum")
-    local best = nil
-    local best_dist = 999999
-    
-    for i = 1, #esp_targets do
-        local e = esp_targets[i]
-        if e and e ~= lp and is_live_player(e) then
-            local team = field_int(e, "m_iTeamNum")
-            if not (myteam ~= 0 and team ~= 0 and team == myteam) then
-                local p = origin_of(e)
-                if p then
-                    local height_diff = my.z - p.z
-                    -- Player height: 72 standing, 54 crouching
-                    if height_diff > 30 and height_diff < 95 then
-                        local dx = p.x - my.x
-                        local dy = p.y - my.y
-                        local dist_2d = math.sqrt(dx * dx + dy * dy)
-                        if dist_2d < 50 and dist_2d < best_dist then
-                            best_dist = dist_2d
-                            best = e
-                        end
-                    end
-                end
-            end
-        end
-    end
-    
-    return best, best_dist
-end
-
--- Get enemy velocity
-local function bb_get_velocity(ent)
-    local v
-    pcall(function() v = ent:GetPropVector("m_vecAbsVelocity") end)
-    if v and v.x then return v end
-    pcall(function() v = ent:GetPropVector("m_vecVelocity") end)
-    if v and v.x then return v end
-    return { x = 0, y = 0, z = 0 }
-end
-
-local bb_is_head_locking = false
 
 local function bb_block(cmd, lp)
     if not g.block_bot:GetValue() then
         bb_release()
         BB.target = nil
-        bb_is_head_locking = false
+        BB.method = BB_NULL
         return
     end
     
-    local flags = field_int(lp, "m_fFlags")
-    local on_ground = bit.band(flags, FL_ONGROUND) ~= 0
-    if not on_ground then
+    -- Get the local player and make sure we are alive
+    if not lp then
         bb_release()
         BB.target = nil
-        bb_is_head_locking = false
+        BB.method = BB_NULL
         return
     end
     
-    local my = origin_of(lp)
-    if not my then
+    local alive = false
+    pcall(function() alive = lp:IsAlive() end)
+    if not alive then
         bb_release()
+        BB.target = nil
+        BB.method = BB_NULL
         return
     end
     
-    -- Check if we're standing on someone's head first
-    local head_target, head_dist = bb_get_enemy_under_us(lp)
-    if head_target then
-        BB.target = head_target
-        bb_is_head_locking = true
-    else
-        bb_is_head_locking = false
-        -- If we don't have a valid target, find ground target
-        if not BB.target or not is_live_player(BB.target) then
-            local enemy, dist = bb_get_closest_enemy(lp)
-            if enemy and dist < 140 then
-                BB.target = enemy
-            else
+    -- Acquire a target if we dont have one
+    if not BB.target then
+        local ok
+        pcall(function()
+            local isAlive = BB.target and BB.target:IsAlive()
+            ok = isAlive
+        end)
+        if not ok then
+            BB.target = bb_acquire_target(lp, 500)
+            BB.method = BB_NULL
+            if not BB.target then
                 bb_release()
-                BB.target = nil
                 return
             end
         end
     end
     
-    local target_pos = origin_of(BB.target)
-    if not target_pos then
+    -- Check if target is still alive
+    local target_alive = false
+    pcall(function() target_alive = BB.target:IsAlive() end)
+    if not target_alive then
+        BB.target = bb_acquire_target(lp, 500)
+        BB.method = BB_NULL
+        if not BB.target then
+            bb_release()
+            return
+        end
+    end
+    
+    local flTickInterval = globals.TickInterval()
+    local vecLocalOrigin = lp:GetAbsOrigin()
+    
+    -- Local velocity with prediction (3 ticks ahead with friction)
+    local vecLocalVelocity
+    pcall(function()
+        vecLocalVelocity = lp:GetPropVector("m_vecVelocity") * flTickInterval * 3
+    end)
+    if not vecLocalVelocity then
         bb_release()
         return
     end
     
-    local dir_x = target_pos.x - my.x
-    local dir_y = target_pos.y - my.y
-    local dist_2d = math.sqrt(dir_x * dir_x + dir_y * dir_y)
-    
-    if bb_is_head_locking then
-        -- HEAD-LOCK: center precisely on top of enemy
-        if dist_2d < 2 then
-            bb_release()
-            return
-        end
-        
-        -- Get view angles
-        local va = cmd:GetViewAngles()
-        local view_yaw = va.y or 0
-        
-        -- Calculate movement direction relative to view
-        local wish_yaw = math.deg(math.atan2(dir_y, dir_x))
-        local diff_yaw = math.rad(wish_yaw - view_yaw)
-        
-        local forward = math.cos(diff_yaw)
-        local side = math.sin(diff_yaw)
-        
-        -- Full W/A/S/D movement for head-lock
-        local press_w = forward > 0.1
-        local press_s = forward < -0.1
-        local press_a = side > 0.1
-        local press_d = side < -0.1
-        
-        bb_set_keys(press_w, press_a, press_s, press_d)
-    else
-        -- GROUND-BLOCK: stand in front of enemy to block their path
-        local vel = bb_get_velocity(BB.target)
-        local speed = math.sqrt(vel.x * vel.x + vel.y * vel.y)
-        local is_stationary = (speed < 15)
-        
-        -- Predict position in front of enemy's movement
-        local block_x, block_y = target_pos.x, target_pos.y
-        if not is_stationary then
-            local dir_x = vel.x / speed
-            local dir_y = vel.y / speed
-            -- Place block position ahead of target
-            block_x = block_x + dir_x * 60
-            block_y = block_y + dir_y * 60
-        end
-        
-        -- Recalculate direction to block position
-        dir_x = block_x - my.x
-        dir_y = block_y - my.y
-        dist_2d = math.sqrt(dir_x * dir_x + dir_y * dir_y)
-        
-        -- Check if already in blocking position
-        local should_move = true
-        if is_stationary then
-            -- If enemy is standing and we're close, stop
-            if dist_2d < 33 then
-                should_move = false
-            end
-        else
-            -- If enemy is moving and we're at the block spot, stop
-            if dist_2d < 4 then
-                should_move = false
-            end
-        end
-        
-        if not should_move then
-            bb_release()
-            return
-        end
-        
-        -- Get view angles
-        local va = cmd:GetViewAngles()
-        local view_yaw = va.y or 0
-        
-        -- Calculate movement direction relative to view
-        local wish_yaw = math.deg(math.atan2(dir_y, dir_x))
-        local diff_yaw = math.rad(wish_yaw - view_yaw)
-        
-        local forward = math.cos(diff_yaw)
-        local side = math.sin(diff_yaw)
-        
-        -- Ground block: use all keys to get to blocking position
-        local press_w = forward > 0.1
-        local press_s = forward < -0.1
-        local press_a = side > 0.1
-        local press_d = side < -0.1
-        
-        bb_set_keys(press_w, press_a, press_s, press_d)
+    -- Target velocity prediction (1 tick)
+    local vecTargetVelocity
+    pcall(function()
+        vecTargetVelocity = BB.target:GetPropVector("m_vecVelocity") * flTickInterval
+    end)
+    if not vecTargetVelocity then
+        bb_release()
+        return
     end
+    
+    local vecTargetOrigin = BB.target:GetAbsOrigin()
+    
+    -- Apply friction to local velocity
+    vecLocalVelocity.z = 0
+    local flLocalSpeed = vecLocalVelocity:Length2D()
+    
+    local flFriction = 0
+    pcall(function() flFriction = lp:GetPropFloat("m_flFriction") end)
+    local sv_friction = 4 -- default sv_friction
+    pcall(function() sv_friction = client.GetConVar("sv_friction") or 4 end)
+    
+    flLocalSpeed = flLocalSpeed - flLocalSpeed * flFriction * sv_friction * flTickInterval * flTickInterval * 3
+    
+    pcall(function() vecLocalVelocity:Normalize() end)
+    vecLocalVelocity = vecLocalVelocity * flLocalSpeed
+    
+    -- How far do we need to move to get to the target
+    local vecDeltaOrigin = (vecTargetOrigin + vecTargetVelocity) - vecLocalOrigin
+    
+    -- Get a valid blocking method
+    if BB.method == BB_NULL then
+        local angDeltaOrigin = vecDeltaOrigin:Angles()
+        if angDeltaOrigin.x > 60 then
+            -- We are mostly above the player, head-lock
+            BB.method = BB_HEAD
+        else
+            -- Body block: lock to an axis (rectangular collision)
+            BB.method = (math.abs(vecDeltaOrigin.x) < math.abs(vecDeltaOrigin.y)) and BB_X or BB_Y
+        end
+    end
+    
+    local flXMove = 0
+    local flYMove = 0
+    
+    if BB.method == BB_HEAD or BB.method == BB_X then
+        -- 0.5 Unit deadzone
+        if math.abs(vecDeltaOrigin.x) > 0.5 then
+            -- Counter-strafe: if predicted velocity will overshoot
+            if (vecDeltaOrigin.x > 0 and vecDeltaOrigin.x - vecLocalVelocity.x < 0)
+                or (vecDeltaOrigin.x < 0 and vecDeltaOrigin.x - vecLocalVelocity.x > 0) then
+                flXMove = -vecDeltaOrigin.x
+            else
+                flXMove = vecDeltaOrigin.x
+            end
+        end
+    end
+    
+    if BB.method == BB_HEAD or BB.method == BB_Y then
+        -- 0.5 Unit deadzone
+        if math.abs(vecDeltaOrigin.y) > 0.5 then
+            -- Counter-strafe: if predicted velocity will overshoot
+            if (vecDeltaOrigin.y > 0 and vecDeltaOrigin.y - vecLocalVelocity.y < 0)
+                or (vecDeltaOrigin.y < 0 and vecDeltaOrigin.y - vecLocalVelocity.y > 0) then
+                flYMove = -vecDeltaOrigin.y
+            else
+                flYMove = vecDeltaOrigin.y
+            end
+        end
+    end
+    
+    -- No movement needed
+    if flXMove == 0 and flYMove == 0 then
+        bb_release()
+        return
+    end
+    
+    -- Convert world-space X/Y move to view-relative forward/side
+    -- then determine which WASD keys to press via keybd_event
+    local angMove = Vector3(flXMove, flYMove, 0):Angles()
+    local view_yaw = 0
+    pcall(function() view_yaw = cmd:GetViewAngles().y end)
+    angMove.y = angMove.y - view_yaw
+    local vecMove = angMove:Forward()
+    
+    local fwd = vecMove.x  -- positive = forward (W), negative = back (S)
+    local side = vecMove.y -- positive = left (A), negative = right (D)
+    
+    local press_w = fwd > 0.05
+    local press_s = fwd < -0.05
+    local press_a = side > 0.05
+    local press_d = side < -0.05
+    
+    bb_set_keys(press_w, press_a, press_s, press_d)
 end
 
 local function pre_move(cmd)
