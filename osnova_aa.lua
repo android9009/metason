@@ -795,75 +795,16 @@ local function vb_disco_at()
 end
 
 local function vb_count_teammates()
-	-- 0) Если включён ручной режим — сразу берём из слайдера
-	if g.vb_manual_enable and g.vb_manual_enable:GetValue() then
-		if g.vb_manual_teammates then
-			return math.max(0, math.floor(g.vb_manual_teammates:GetValue() + 0.5))
-		end
-		return 4
+	local lp = entities.GetLocalPlayer()
+	if not lp then return 0 end
+	local my_team = lp:GetTeamNumber()
+	local count = 0
+	local players = entities.FindByClass("CCSPlayer")
+	for i = 1, #players do
+		local p = players[i]
+		if p ~= lp and p:GetTeamNumber() == my_team then count = count + 1 end
 	end
-	-- 1) Пробуем FFI entity list (работает всегда, если есть AWCHANGER_API)
-	local ffi_v = rawget(_G, "ffi")
-	if type(ffi_v) == "table" then
-		local CAPI = rawget(_G, "AWCHANGER_API") or {}
-		local elist_off = CAPI.offsets and CAPI.offsets.dwEntityList
-		local lctrl_off = CAPI.offsets and CAPI.offsets.dwLocalPlayerController
-		if elist_off and lctrl_off then
-			local band, rshift = bit.band, bit.rshift
-			local function h_r_ptr(a)
-				local ok, v = pcall(function() return tonumber(ffi_v.cast("uint64_t*", a)[0]) end)
-				return ok and v or nil
-			end
-			local function h_valid(p) return p ~= nil and p > 0x10000 and p < 0x7FFFFFFFFFFF end
-			local base = mem.GetModuleBase("client.dll")
-			if base then
-				local lctrl = h_r_ptr(base + lctrl_off)
-				local elist = h_r_ptr(base + elist_off)
-				if h_valid(lctrl) and h_valid(elist) then
-					local my_team = 0
-					pcall(function() my_team = entities.GetLocalPlayer():GetTeamNumber() end)
-					if my_team == 0 then
-						pcall(function() my_team = ffi_v.cast("uint32_t*", lctrl + 0x3EB)[0] end)
-					end
-					if my_team > 0 then
-						local count = 0
-						for slot = 0, 63 do
-							local chunk = h_r_ptr(elist + 8 * rshift(slot, 9) + 16)
-							if not h_valid(chunk) then break end
-							local ctrl = h_r_ptr(chunk + 112 * band(slot, 0x1FF))
-							if h_valid(ctrl) and h_valid(h_r_ptr(ctrl)) then
-								if ctrl ~= lctrl then
-									local team = 0
-									pcall(function() team = ffi_v.cast("uint32_t*", ctrl + 0x3EB)[0] end)
-									if team == my_team then count = count + 1 end
-								end
-							end
-						end
-						if count > 0 then return count end
-					end
-				end
-			end
-		end
-	end
-	-- 2) Fallback: entities.FindByClass
-	pcall(function()
-		local lp = entities.GetLocalPlayer()
-		if lp then
-			local my_team = lp:GetTeamNumber()
-			local players = entities.FindByClass("CCSPlayer")
-			if players and #players > 0 then
-				local count = 0
-				for i = 1, #players do
-					local p = players[i]
-					if p ~= lp and p:GetTeamNumber() == my_team then count = count + 1 end
-				end
-				if count > 0 then return count end
-			end
-		end
-	end)
-	-- 3) Всё сломалось — возвращаем 0, авто не работает
-	print("[VB] WARNING: could not detect teammates automatically! Enable manual override in Misc > Features")
-	return 0
+	return count
 end
 
 local function vb_reset()
@@ -927,7 +868,6 @@ function vote_on_event(ev)
 		VB.disco_at, VB.needed = vb_disco_at()
 		-- VB.needed = сколько нужно голосов "ЗА" для кика
 		-- VB.disco_at = при скольких голосах "ЗА" дизконнектиться
-		print("[VB] total=" .. (VB.teammates + 1) .. " teammates=" .. VB.teammates .. " disco_at=" .. tostring(VB.disco_at) .. " needed=" .. VB.needed)
 
 		local is_kick = issue:lower():find("kick") ~= nil
 		VB.is_kick_against_us = false
@@ -1026,8 +966,6 @@ end
 -- Anti-kick / reconnect bypass firewall toggle
 g.anti_kick = gui.Checkbox(MISCTAB, "misc_anti_kick", "Anti-kick", false)
 g.vb_mode     = gui.Combobox(MISCTAB, "vb_mode", "VB Action", "Auto Leave", "Anti-Kick (AK)", "Vote No Only")
-g.vb_manual_enable = gui.Checkbox(MISCTAB, "vb_manual_enable", "VB Manual Teammates (override)", false)
-g.vb_manual_teammates = gui.Slider(MISCTAB, "vb_manual_teammates", "VB Manual Teammates", 4, 1, 9, 1)
 
 AK = AK or {
     enabled = false,
@@ -3948,14 +3886,6 @@ function on_draw()
 	-- Builder + scope + VAC-NET visibility
 	handle_builder_vis()
 	handle_vacnet()
-	-- VB manual teammates checkbox + slider show/hide
-	if g.vb_manual_enable then
-		g.vb_manual_enable:SetInvisible(not g.vb_mode or not g.vb_mode:GetValue())
-	end
-	if g.vb_manual_teammates then
-		local show = g.vb_mode and g.vb_mode:GetValue() and g.vb_manual_enable and g.vb_manual_enable:GetValue()
-		g.vb_manual_teammates:SetInvisible(not show)
-	end
 
 	-- Duck Peek
 	local dk = g.duck_peek:GetValue()
@@ -4121,3 +4051,36 @@ callbacks.Register("Unload", "aa_air_stop_unload", function()
 	as_release(false)
 end)
 
+-- ============================================================
+-- Unload: чистим всё при выгрузке скрипта
+-- ============================================================
+callbacks.Register("Unload", "osnova_aa_unload", function()
+    pcall(function() callbacks.Unregister("PreMove", "aa_premove") end)
+    pcall(function() callbacks.Unregister("Draw", "aa_draw") end)
+    pcall(function() callbacks.Unregister("DrawESP", "aa_esp") end)
+    pcall(function() callbacks.Unregister("FireGameEvent", "aa_event") end)
+    pcall(function() callbacks.Unregister("Unload", "aa_air_stop_unload") end)
+    pcall(function() callbacks.Unregister("Unload", "osnova_aa_unload") end)
+
+    -- Снимаем VM hook
+    local VM = rawget(_G, "VM")
+    if VM and VM.uninstall then pcall(VM.uninstall) end
+
+    -- Отключаем AK
+    local AK = rawget(_G, "AK")
+    if AK and AK.enabled and AK.sync then pcall(AK.sync, false) end
+
+    -- Снимаем RG hook
+    local RG = rawget(_G, "RG")
+    if RG and RG.uninstall then pcall(RG.uninstall) end
+
+    _G.__AA = nil
+    _G.g = nil
+    _G.AK = nil
+    _G.RG = nil
+    _G.VM = nil
+    _G.MY_USERID = nil
+    _G.VB = nil
+
+    print("[osnova] AA Builder unloaded and cleaned")
+end)
