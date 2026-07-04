@@ -791,7 +791,6 @@ end
 
 -- Anti-kick / reconnect bypass firewall toggle
 g.anti_kick = gui.Checkbox(MISCTAB, "misc_anti_kick", "Anti-kick", false)
-g.block_bot = gui.Checkbox(MISCTAB, "misc_block_bot", "Block Bot", false)
 
 AK = AK or {
     enabled = false,
@@ -1701,6 +1700,113 @@ pcall(function()
     end
 end)
 
+-- ============================================================
+-- Auto Revolver: when Ragebot > Main > Enabled is on and
+-- holding R8 Revolver (def 64), automatically click LMB
+-- (cock → release → fire cycle) via mouse_event
+-- ============================================================
+local rbot_master_ref = nil
+pcall(function()
+    local main = gui.Reference("Ragebot", "Main")
+    if not main then return end
+    for child in main:Children() do
+        local nm = ""
+        pcall(function() nm = child:GetName() end)
+        if nm == "Enabled" then rbot_master_ref = child; return end
+    end
+end)
+
+local AR_FFI = rawget(_G, "ffi")
+if AR_FFI then
+    pcall(function()
+        AR_FFI.cdef[[
+            void mouse_event(unsigned long dwFlags, unsigned long dx, unsigned long dy, unsigned long dwData, void* dwExtraInfo);
+        ]]
+    end)
+end
+
+local AR_LEFTDOWN = 0x0002
+local AR_LEFTUP   = 0x0004
+
+local ar_lmb_down = false
+local ar_last_toggle = 0
+-- Timing: 0.4s hold (cock) + 0.25s release (fire + gap) = 0.65s cycle
+local AR_HOLD_TIME   = 0.4
+local AR_RELEASE_TIME = 0.25
+
+local function ar_mouse_lmb(down)
+    if not AR_FFI then return end
+    pcall(function()
+        AR_FFI.C.mouse_event(down and AR_LEFTDOWN or AR_LEFTUP, 0, 0, 0, nil)
+    end)
+    ar_lmb_down = down
+end
+
+local function ar_release()
+    if ar_lmb_down then
+        ar_mouse_lmb(false)
+    end
+end
+
+local function ar_is_ragebot_enabled()
+    if rbot_master_ref then
+        local v = nil
+        pcall(function() v = rbot_master_ref:GetValue() end)
+        if v == true or v == 1 or (type(v) == "number" and v ~= 0) then
+            return true
+        end
+        return false
+    end
+    -- fallback: try gui.GetValue
+    local v = nil
+    pcall(function() v = gui.GetValue("rbot.master") end)
+    return v == true or v == 1 or (type(v) == "number" and v ~= 0)
+end
+
+local function ar_is_revolver()
+    local def = active_weapon_def_safe()
+    return def == 64
+end
+
+local function ar_tick()
+    -- Only active when ragebot master is on and holding revolver
+    if not ar_is_ragebot_enabled() or not ar_is_revolver() then
+        ar_release()
+        ar_last_toggle = 0
+        return
+    end
+
+    -- Check alive
+    local lp = entities.GetLocalPlayer()
+    if not lp then ar_release(); return end
+    local alive = false
+    pcall(function() alive = lp:IsAlive() end)
+    if not alive then ar_release(); ar_last_toggle = 0; return end
+
+    local now = globals.CurTime()
+    if ar_last_toggle == 0 then
+        -- Start: press LMB
+        ar_mouse_lmb(true)
+        ar_last_toggle = now
+        return
+    end
+
+    local elapsed = now - ar_last_toggle
+    if ar_lmb_down then
+        -- LMB is held (cocking) — release after AR_HOLD_TIME
+        if elapsed >= AR_HOLD_TIME then
+            ar_mouse_lmb(false)
+            ar_last_toggle = now
+        end
+    else
+        -- LMB is released (fired) — press again after AR_RELEASE_TIME
+        if elapsed >= AR_RELEASE_TIME then
+            ar_mouse_lmb(true)
+            ar_last_toggle = now
+        end
+    end
+end
+
 -- DT recharge tracking
 local dt_fire_time = 0       -- globals.CurTime() when last DT shot fired
 local dt_recharging = false  -- true while DT is on cooldown
@@ -1713,6 +1819,7 @@ DT_RECHARGE = {
     ["Scout"]        = 3.4,
     ["Auto Sniper"]  = 0.7,
     ["Heavy Pistol"] = 0.7,
+    ["Revolver"]     = 1.3,
     ["Pistol"]       = 0.5,
     ["Rifle"]        = 0.3,
     ["SMG"]          = 0.2,
@@ -2407,7 +2514,8 @@ local AS_DEF_TO_CATEGORY = {
     [2] = "Pistol", [3] = "Pistol", [4] = "Pistol", [30] = "Pistol",
     [32] = "Pistol", [36] = "Pistol", [61] = "Pistol", [63] = "Pistol",
 
-    [1] = "Heavy Pistol", [64] = "Heavy Pistol",
+    [1] = "Heavy Pistol",
+    [64] = "Revolver",
 
     [17] = "Submachine Gun", [19] = "Submachine Gun", [23] = "Submachine Gun",
     [24] = "Submachine Gun", [26] = "Submachine Gun", [33] = "Submachine Gun", [34] = "Submachine Gun",
@@ -2671,283 +2779,6 @@ local function as_pause(ticks)
     as_restore_user_keys(ticks or AIR_STOP_RESTORE_TICKS)
 end
 
--- ============================================================
--- Block Bot (Miscellaneous > Features)
--- Automatically blocks the closest enemy by predicting their movement.
--- Uses Windows API (keybd_event) like Air Stop.
--- Logic ported from working Aimware blockbot example.
--- ============================================================
-local BB = {
-    target = nil,
-    method = 0, -- 0=NULL, 1=HEAD, 2=X, 3=Y
-}
-
-local BB_FFI = rawget(_G, "ffi")
-if BB_FFI then
-    pcall(function()
-        BB_FFI.cdef[[
-            void keybd_event(unsigned char bVk, unsigned char bScan, unsigned long dwFlags, unsigned long dwExtraInfo);
-            short GetAsyncKeyState(int vKey);
-        ]]
-    end)
-end
-
-local BB_VK_W, BB_VK_A, BB_VK_S, BB_VK_D = 0x57, 0x41, 0x53, 0x44
-local BB_KEYUP = 0x0002
-
-local function bb_key(vk, down)
-    if not BB_FFI then return end
-    pcall(function() BB_FFI.C.keybd_event(vk, 0, down and 0 or BB_KEYUP, 0) end)
-end
-
-local function bb_down(vk)
-    if not BB_FFI then return false end
-    local ok, v = pcall(function() return BB_FFI.C.GetAsyncKeyState(vk) end)
-    return ok and v and bit.band(v, 0x8000) ~= 0 or false
-end
-
-local BB_keys = { w = false, a = false, s = false, d = false }
-local BB_saved = { w = false, a = false, s = false, d = false }
-
-local function bb_save_user_keys()
-    BB_saved.w = bb_down(BB_VK_W) and not BB_keys.w
-    BB_saved.a = bb_down(BB_VK_A) and not BB_keys.a
-    BB_saved.s = bb_down(BB_VK_S) and not BB_keys.s
-    BB_saved.d = bb_down(BB_VK_D) and not BB_keys.d
-end
-
-local function bb_restore_user_keys()
-    if BB_saved.w then bb_key(BB_VK_W, true) end
-    if BB_saved.a then bb_key(BB_VK_A, true) end
-    if BB_saved.s then bb_key(BB_VK_S, true) end
-    if BB_saved.d then bb_key(BB_VK_D, true) end
-end
-
-local function bb_set_keys(w, a, s, d)
-    if w or a or s or d then
-        bb_save_user_keys()
-        bb_key(BB_VK_W, false); bb_key(BB_VK_A, false)
-        bb_key(BB_VK_S, false); bb_key(BB_VK_D, false)
-        BB_keys.w, BB_keys.a, BB_keys.s, BB_keys.d = false, false, false, false
-    end
-
-    if BB_keys.w and not w then bb_key(BB_VK_W, false); BB_keys.w = false end
-    if BB_keys.a and not a then bb_key(BB_VK_A, false); BB_keys.a = false end
-    if BB_keys.s and not s then bb_key(BB_VK_S, false); BB_keys.s = false end
-    if BB_keys.d and not d then bb_key(BB_VK_D, false); BB_keys.d = false end
-
-    if w then bb_key(BB_VK_W, true); BB_keys.w = true end
-    if a then bb_key(BB_VK_A, true); BB_keys.a = true end
-    if s then bb_key(BB_VK_S, true); BB_keys.s = true end
-    if d then bb_key(BB_VK_D, true); BB_keys.d = true end
-end
-
-local function bb_release()
-    bb_set_keys(false, false, false, false)
-    bb_restore_user_keys()
-end
-
--- BB method constants
-local BB_NULL = 0
-local BB_HEAD = 1
-local BB_X    = 2
-local BB_Y    = 3
-
--- Acquire closest target (ported from working example)
-local function bb_acquire_target(lp, dist_limit)
-    dist_limit = math.abs(dist_limit or 500)
-    if not lp then return nil end
-    
-    local alive = false
-    pcall(function() alive = lp:IsAlive() end)
-    if not alive then return nil end
-    
-    local vecOrigin = lp:GetAbsOrigin()
-    local iEntIndex = lp:GetIndex()
-    local flClosestDistance = dist_limit + 1
-    local pClosestTarget = nil
-    
-    local players = entities.FindByClass("C_CSPlayerPawn")
-    if not players then return nil end
-    
-    for i = 1, #players do
-        local pTarget = players[i]
-        local ok = pcall(function()
-            if pTarget:GetIndex() ~= iEntIndex and pTarget:IsAlive() and pTarget:GetTeamNumber() > 1 then
-                local flDistance = (pTarget:GetAbsOrigin() - vecOrigin):Length()
-                if flDistance < flClosestDistance then
-                    flClosestDistance = flDistance
-                    pClosestTarget = pTarget
-                end
-            end
-        end)
-    end
-    
-    return (flClosestDistance <= dist_limit) and pClosestTarget or nil
-end
-
-local function bb_block(cmd, lp)
-    if not g.block_bot:GetValue() then
-        bb_release()
-        BB.target = nil
-        BB.method = BB_NULL
-        return
-    end
-    
-    -- Get the local player and make sure we are alive
-    if not lp then
-        bb_release()
-        BB.target = nil
-        BB.method = BB_NULL
-        return
-    end
-    
-    local alive = false
-    pcall(function() alive = lp:IsAlive() end)
-    if not alive then
-        bb_release()
-        BB.target = nil
-        BB.method = BB_NULL
-        return
-    end
-    
-    -- Acquire a target if we dont have one
-    if not BB.target then
-        local ok
-        pcall(function()
-            local isAlive = BB.target and BB.target:IsAlive()
-            ok = isAlive
-        end)
-        if not ok then
-            BB.target = bb_acquire_target(lp, 500)
-            BB.method = BB_NULL
-            if not BB.target then
-                bb_release()
-                return
-            end
-        end
-    end
-    
-    -- Check if target is still alive
-    local target_alive = false
-    pcall(function() target_alive = BB.target:IsAlive() end)
-    if not target_alive then
-        BB.target = bb_acquire_target(lp, 500)
-        BB.method = BB_NULL
-        if not BB.target then
-            bb_release()
-            return
-        end
-    end
-    
-    local flTickInterval = globals.TickInterval()
-    local vecLocalOrigin = lp:GetAbsOrigin()
-    
-    -- Local velocity with prediction (3 ticks ahead with friction)
-    local vecLocalVelocity
-    pcall(function()
-        vecLocalVelocity = lp:GetPropVector("m_vecVelocity") * flTickInterval * 3
-    end)
-    if not vecLocalVelocity then
-        bb_release()
-        return
-    end
-    
-    -- Target velocity prediction (1 tick)
-    local vecTargetVelocity
-    pcall(function()
-        vecTargetVelocity = BB.target:GetPropVector("m_vecVelocity") * flTickInterval
-    end)
-    if not vecTargetVelocity then
-        bb_release()
-        return
-    end
-    
-    local vecTargetOrigin = BB.target:GetAbsOrigin()
-    
-    -- Apply friction to local velocity
-    vecLocalVelocity.z = 0
-    local flLocalSpeed = vecLocalVelocity:Length2D()
-    
-    local flFriction = 0
-    pcall(function() flFriction = lp:GetPropFloat("m_flFriction") end)
-    local sv_friction = 4 -- default sv_friction
-    pcall(function() sv_friction = client.GetConVar("sv_friction") or 4 end)
-    
-    flLocalSpeed = flLocalSpeed - flLocalSpeed * flFriction * sv_friction * flTickInterval * flTickInterval * 3
-    
-    pcall(function() vecLocalVelocity:Normalize() end)
-    vecLocalVelocity = vecLocalVelocity * flLocalSpeed
-    
-    -- How far do we need to move to get to the target
-    local vecDeltaOrigin = (vecTargetOrigin + vecTargetVelocity) - vecLocalOrigin
-    
-    -- Get a valid blocking method
-    if BB.method == BB_NULL then
-        local angDeltaOrigin = vecDeltaOrigin:Angles()
-        if angDeltaOrigin.x > 60 then
-            -- We are mostly above the player, head-lock
-            BB.method = BB_HEAD
-        else
-            -- Body block: lock to an axis (rectangular collision)
-            BB.method = (math.abs(vecDeltaOrigin.x) < math.abs(vecDeltaOrigin.y)) and BB_X or BB_Y
-        end
-    end
-    
-    local flXMove = 0
-    local flYMove = 0
-    
-    if BB.method == BB_HEAD or BB.method == BB_X then
-        -- 0.5 Unit deadzone
-        if math.abs(vecDeltaOrigin.x) > 0.5 then
-            -- Counter-strafe: if predicted velocity will overshoot
-            if (vecDeltaOrigin.x > 0 and vecDeltaOrigin.x - vecLocalVelocity.x < 0)
-                or (vecDeltaOrigin.x < 0 and vecDeltaOrigin.x - vecLocalVelocity.x > 0) then
-                flXMove = -vecDeltaOrigin.x
-            else
-                flXMove = vecDeltaOrigin.x
-            end
-        end
-    end
-    
-    if BB.method == BB_HEAD or BB.method == BB_Y then
-        -- 0.5 Unit deadzone
-        if math.abs(vecDeltaOrigin.y) > 0.5 then
-            -- Counter-strafe: if predicted velocity will overshoot
-            if (vecDeltaOrigin.y > 0 and vecDeltaOrigin.y - vecLocalVelocity.y < 0)
-                or (vecDeltaOrigin.y < 0 and vecDeltaOrigin.y - vecLocalVelocity.y > 0) then
-                flYMove = -vecDeltaOrigin.y
-            else
-                flYMove = vecDeltaOrigin.y
-            end
-        end
-    end
-    
-    -- No movement needed
-    if flXMove == 0 and flYMove == 0 then
-        bb_release()
-        return
-    end
-    
-    -- Convert world-space X/Y move to view-relative forward/side
-    -- then determine which WASD keys to press via keybd_event
-    local angMove = Vector3(flXMove, flYMove, 0):Angles()
-    local view_yaw = 0
-    pcall(function() view_yaw = cmd:GetViewAngles().y end)
-    angMove.y = angMove.y - view_yaw
-    local vecMove = angMove:Forward()
-    
-    local fwd = vecMove.x  -- positive = forward (W), negative = back (S)
-    local side = vecMove.y -- positive = left (A), negative = right (D)
-    
-    local press_w = fwd > 0.05
-    local press_s = fwd < -0.05
-    local press_a = side > 0.05
-    local press_d = side < -0.05
-    
-    bb_set_keys(press_w, press_a, press_s, press_d)
-end
-
 local function pre_move(cmd)
 	pre_va = cmd:GetViewAngles()
 
@@ -2960,14 +2791,6 @@ local function pre_move(cmd)
 		local alive = false
 		if alp then pcall(function() alive = alp:IsAlive() end) end
 		if alive then as_air_stop(cmd, alp) else as_auto_restore(); as_release(false) end
-	end
-
-	-- Block Bot: independent of AA master, uses keybd_event like Air Stop
-	do
-		local bblp = entities.GetLocalPlayer()
-		local alive = false
-		if bblp then pcall(function() alive = bblp:IsAlive() end) end
-		if alive then bb_block(cmd, bblp) else bb_release() end
 	end
 
 	-- duck peek assist (bind held). stay crouched, and only stand to peek when
@@ -3974,6 +3797,9 @@ end
 -- on_draw — main draw callback (refactored to fix >200 locals)
 -- ============================================================
 function on_draw()
+	-- Auto Revolver tick
+	pcall(ar_tick)
+
 	-- viewmodel easing
 	local tx, ty, tz = g.vm_x:GetValue(), g.vm_y:GetValue(), g.vm_z:GetValue()
 	local s = 0.15
@@ -4150,7 +3976,7 @@ callbacks.Register("Unload", "aa_air_stop_unload", function()
 	pcall(function() if AK and AK.enabled then AK.sync(false) end end)
 	as_auto_restore()
 	as_release(false)
-	bb_release()
+	ar_release()
 end)
 
 -- ============================================================
