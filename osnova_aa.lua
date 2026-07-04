@@ -2775,14 +2775,20 @@ local function handle_blockbot(cmd)
         local forward = math.cos(math.rad(move_yaw - va.y))
         local side = math.sin(math.rad(move_yaw - va.y))
         
-        -- Используем систему как в Air Stop (эмуляция нажатий через FFI)
+        -- Устанавливаем значения движения в UserCmd (чтобы персонаж реально шел)
+        cmd:SetForwardMove(forward * 450)
+        cmd:SetSideMove(side * 450)
+
+        -- Эмулируем нажатия кнопок для системы Air Stop и обхода анти-читов
         as_set_script_keys(
             forward > 0.45,  -- W
             forward < -0.45, -- S
-            side > 0.45,     -- A (в CS2 side > 0 это влево в зависимости от va)
+            side > 0.45,     -- A
             side < -0.45     -- D
         )
     else
+        cmd:SetForwardMove(0)
+        cmd:SetSideMove(0)
         as_set_script_keys(false, false, false, false)
     end
 end
@@ -4022,3 +4028,4 @@ callbacks.Register("Unload", "osnova_aa_unload", function()
 
     print("[osnova] AA Builder unloaded and cleaned")
 end)
+
