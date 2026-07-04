@@ -2687,6 +2687,15 @@ local function get_velocity(e)
     return v or Vector3(0,0,0)
 end
 
+local blockbot_target = nil
+local function get_velocity(e)
+    local v = nil
+    pcall(function() v = e:GetPropVector("m_vecVelocity") end)
+    if not v then pcall(function() v = e:GetPropVector("m_vVelocity") end) end
+    if not v then pcall(function() v = e:GetAbsVelocity() end) end
+    return v or Vector3(0,0,0)
+end
+
 local function handle_blockbot(cmd)
     if not g.blockbot_enable or not g.blockbot_enable:GetValue() then 
         if blockbot_target then as_release(true) end
@@ -2775,13 +2784,11 @@ local function handle_blockbot(cmd)
         local forward = math.cos(math.rad(move_yaw - va.y))
         local side = math.sin(math.rad(move_yaw - va.y))
         
-        -- У CS2 есть особенность: если ты просто эмулируешь нажатия через FFI,
-        -- но в UserCmd (самом пакете движения) стоят нули, игра может игнорировать ввод.
-        -- Поэтому мы задаем максимальную скорость в самом пакете:
-        cmd:SetForwardMove(forward > 0 and 450 or (forward < 0 and -450 or 0))
-        cmd:SetSideMove(side > 0 and 450 or (side < 0 and -450 or 0))
+        as_auto_off()
 
-        -- И ПЛЮС прожимаем кнопки в UserCmd (биты кнопок), чтобы игра видела активность:
+        cmd:SetForwardMove(forward * 450)
+        cmd:SetSideMove(side * 450)
+
         local b = cmd:GetButtons()
         if forward > 0.1 then b = bit.bor(b, IN_FORWARD) end
         if forward < -0.1 then b = bit.bor(b, IN_BACK) end
@@ -2789,8 +2796,6 @@ local function handle_blockbot(cmd)
         if side < -0.1 then b = bit.bor(b, IN_RIGHT) end
         cmd:SetButtons(b)
 
-        -- И ПЛЮС твой метод через FFI (для анимаций и обхода):
-        as_auto_off()
         as_set_script_keys(
             forward > 0.45,
             forward < -0.45,
@@ -2806,6 +2811,9 @@ local function handle_blockbot(cmd)
     end
 end
 
+local function pre_move(cmd)
+    end
+end
 
 local function pre_move(cmd)
 	pre_va = cmd:GetViewAngles()
