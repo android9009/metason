@@ -2810,11 +2810,6 @@ local function handle_blockbot(cmd)
         as_release(true)
     end
 end
-
-local function pre_move(cmd)
-    end
-end
-
 local function pre_move(cmd)
 	pre_va = cmd:GetViewAngles()
 	pcall(handle_blockbot, cmd)
