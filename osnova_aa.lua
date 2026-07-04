@@ -2693,8 +2693,11 @@ local function handle_blockbot(cmd)
         blockbot_target = nil
         return 
     end
+    
     local key = g.blockbot_key:GetValue()
-    if key == 0 or not input.IsButtonDown(key) then 
+    -- Если кнопка назначена (не 0) и НЕ зажата — выходим. 
+    -- Если кнопка НЕ назначена (стоит 0) — работает всегда при включенном чекбоксе.
+    if key ~= 0 and not input.IsButtonDown(key) then 
         blockbot_target = nil
         return 
     end
