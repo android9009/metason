@@ -2814,6 +2814,9 @@ local function pre_move(cmd)
 		if alive then as_air_stop(cmd, alp) else as_auto_restore(); as_release(false) end
 	end
 
+	-- Auto Revolver: silent +attack/-attack cycle for R8 Revolver (must be in PreMove)
+	pcall(ar_tick)
+
 	-- duck peek assist (bind held). stay crouched, and only stand to peek when
 	-- the cheat sees a target (enemy on screen) but we haven't been able to fire
 	-- for ~200ms - i.e. something is blocking the shot from the crouch. while
@@ -3818,9 +3821,6 @@ end
 -- on_draw — main draw callback (refactored to fix >200 locals)
 -- ============================================================
 function on_draw()
-	-- Auto Revolver: silent +attack/-attack cycle for R8 Revolver
-	pcall(ar_tick)
-
 	-- viewmodel easing
 	local tx, ty, tz = g.vm_x:GetValue(), g.vm_y:GetValue(), g.vm_z:GetValue()
 	local s = 0.15
