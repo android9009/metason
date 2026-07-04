@@ -47,7 +47,7 @@ local LUASCRIPTS_REF
 pcall(function() LUASCRIPTS_REF = gui.Reference("Lua Scripts") end)
 local scriptsgb = nil
 if LUASCRIPTS_REF then
-    scriptsgb = gui.Groupbox(LUASCRIPTS_REF, "Scripts", 510, 308, 225, 200)
+    scriptsgb = gui.Groupbox(LUASCRIPTS_REF, "Scripts", 510, 308, 222, 200)
 end
 
 -- ============================================================
