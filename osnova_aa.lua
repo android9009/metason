@@ -2690,25 +2690,29 @@ end
 
 local function handle_blockbot(cmd)
     if not g.blockbot_enable or not g.blockbot_enable:GetValue() then 
+        if blockbot_target then as_release(true) end
         blockbot_target = nil
         return 
     end
     
     local key = g.blockbot_key:GetValue()
-    -- Если кнопка назначена (не 0) и НЕ зажата — выходим. 
-    -- Если кнопка НЕ назначена (стоит 0) — работает всегда при включенном чекбоксе.
     if key ~= 0 and not input.IsButtonDown(key) then 
+        if blockbot_target then as_release(true) end
         blockbot_target = nil
         return 
     end
 
     local lp = entities.GetLocalPlayer()
-    if not lp or not lp:IsAlive() then return end
+    if not lp or not lp:IsAlive() then 
+        as_release(true)
+        blockbot_target = nil
+        return 
+    end
     
     local my_pos = origin_of(lp)
     if not my_pos then return end
 
-    -- Поиск цели (если текущая невалидна или далеко)
+    -- Поиск цели
     if not blockbot_target or not blockbot_target:IsAlive() or (origin_of(blockbot_target) and (origin_of(blockbot_target) - my_pos):Length() > 400) then
         local best_dist = 300
         blockbot_target = nil
@@ -2734,10 +2738,16 @@ local function handle_blockbot(cmd)
         end
     end
 
-    if not blockbot_target then return end
+    if not blockbot_target then 
+        as_release(true)
+        return 
+    end
 
     local target_pos = origin_of(blockbot_target)
-    if not target_pos then return end
+    if not target_pos then 
+        as_release(true)
+        return 
+    end
 
     local target_vel = get_velocity(blockbot_target)
     local target_speed = math.sqrt(target_vel.x*target_vel.x + target_vel.y*target_vel.y)
@@ -2749,15 +2759,12 @@ local function handle_blockbot(cmd)
     end
 
     local move_pos_x, move_pos_y = target_pos.x, target_pos.y
-    
     if is_on_head then
-        -- На голове: предикшн, чтобы не слететь
         if target_speed > 5 then
             move_pos_x = target_pos.x + target_vel.x * (globals.TickInterval() * 3)
             move_pos_y = target_pos.y + target_vel.y * (globals.TickInterval() * 3)
         end
     else
-        -- На земле: встаем ПЕРЕД челом
         if target_speed > 15 then
             local vx = target_vel.x / target_speed
             local vy = target_vel.y / target_speed
@@ -2770,29 +2777,21 @@ local function handle_blockbot(cmd)
     local dy = move_pos_y - my_pos.y
     local dist = math.sqrt(dx*dx + dy*dy)
     
-    if dist > 0.8 then
+    if dist > 1.2 then
         local va = cmd:GetViewAngles()
         local move_yaw = math.deg(math.atan2(dy, dx))
         local forward = math.cos(math.rad(move_yaw - va.y))
         local side = math.sin(math.rad(move_yaw - va.y))
         
-        local m_f = forward * 450
-        local m_s = side * 450
-        
-        cmd:SetForwardMove(m_f)
-        cmd:SetSideMove(m_s)
-        
-        -- Прожим кнопок для CS2 (обязательно)
-        local b = cmd:GetButtons()
-        if m_f > 50 then b = bit.bor(b, IN_FORWARD) end
-        if m_f < -50 then b = bit.bor(b, IN_BACK) end
-        if m_s > 50 then b = bit.bor(b, IN_LEFT) end
-        if m_s < -50 then b = bit.bor(b, IN_RIGHT) end
-        cmd:SetButtons(b)
+        -- Используем систему как в Air Stop (эмуляция нажатий через FFI)
+        as_set_script_keys(
+            forward > 0.45,  -- W
+            forward < -0.45, -- S
+            side > 0.45,     -- A (в CS2 side > 0 это влево в зависимости от va)
+            side < -0.45     -- D
+        )
     else
-        -- Если уже в нужной точке - стопаемся
-        cmd:SetForwardMove(0)
-        cmd:SetSideMove(0)
+        as_set_script_keys(false, false, false, false)
     end
 end
 
