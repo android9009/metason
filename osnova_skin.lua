@@ -5287,4 +5287,13 @@ callbacks.Register("Draw", "SkinChangerUI", function()
     end
 
 end)
+-- ============================================================
+-- Unload: чистим всё при выгрузке скрипта
+-- ============================================================
+callbacks.Register("Unload", "osnova_skin_unload", function()
+    -- Снимаем VM hook
+    local VM = rawget(_G, "VM")
+    if VM and VM.uninstall then pcall(VM.uninstall) end
+    _G.AWCHANGER_API = nil
+end)
 end
