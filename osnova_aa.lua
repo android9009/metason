@@ -447,7 +447,7 @@ g.roundend_enable = gui.Checkbox(TAB, "aa_roundend_enable", "Enable Round End AA
 
 -- Scripts Listbox: helpers selection
 if scriptsgb then
-g.scripts_list = gui.Listbox(scriptsgb, "scripts_helpers", 160, "Wallbang Helper", "Grenade Helper", "Sync")
+g.scripts_list = gui.Listbox(scriptsgb, "scripts_helpers", 170, "Wallbang Helper", "Grenade Helper", "Sync")
 end
 
 -- Round End AA Yaw
