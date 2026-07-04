@@ -797,6 +797,12 @@ end
 -- Anti-kick / reconnect bypass firewall toggle
 g.anti_kick = gui.Checkbox(MISCTAB, "misc_anti_kick", "Anti-kick", false)
 
+-- Blockbot
+local MISC_GB = gui.Groupbox(MISCTAB, "Blockbot", 16, 350, 296, 0)
+g.blockbot_enable = gui.Checkbox(MISC_GB, "aa_blockbot_enable", "Enable Blockbot", false)
+g.blockbot_key = gui.Keybox(MISC_GB, "aa_blockbot_key", "Blockbot Key", 0)
+
+
 AK = AK or {
     enabled = false,
     ready = false,
@@ -2675,8 +2681,105 @@ local function as_pause(ticks)
     as_restore_user_keys(ticks or AIR_STOP_RESTORE_TICKS)
 end
 
+local blockbot_target = nil
+local function get_velocity(e)
+    local v = nil
+    pcall(function() v = e:GetPropVector("m_vecVelocity") end)
+    return v or Vector3(0,0,0)
+end
+
+local function handle_blockbot(cmd)
+    if not g.blockbot_enable or not g.blockbot_enable:GetValue() then 
+        blockbot_target = nil
+        return 
+    end
+    local key = g.blockbot_key:GetValue()
+    if key == 0 or not input.IsButtonDown(key) then 
+        blockbot_target = nil
+        return 
+    end
+
+    local lp = entities.GetLocalPlayer()
+    if not lp or not lp:IsAlive() then return end
+    
+    local my_pos = origin_of(lp)
+    if not my_pos then return end
+
+    if not blockbot_target or not blockbot_target:IsAlive() then
+        local best_dist = 250
+        blockbot_target = nil
+        if esp_targets then
+            for i = 1, #esp_targets do
+                local p = esp_targets[i]
+                if p:GetIndex() ~= lp:GetIndex() and is_live_player(p) then
+                    local pos = origin_of(p)
+                    if pos then
+                        local dx, dy = pos.x - my_pos.x, pos.y - my_pos.y
+                        local dist = math.sqrt(dx*dx + dy*dy)
+                        if dist < best_dist then
+                            best_dist = dist
+                            blockbot_target = p
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if not blockbot_target then return end
+
+    local target_pos = origin_of(blockbot_target)
+    if not target_pos then return end
+
+    local target_vel = get_velocity(blockbot_target)
+    local target_speed = math.sqrt(target_vel.x*target_vel.x + target_vel.y*target_vel.y)
+    
+    local is_on_head = false
+    local height_diff = my_pos.z - target_pos.z
+    if height_diff > 50 and height_diff < 100 then
+        is_on_head = true
+    end
+
+    local move_pos_x, move_pos_y = target_pos.x, target_pos.y
+    
+    if is_on_head then
+        if target_speed > 10 then
+            move_pos_x = my_pos.x + target_vel.x * (globals.TickInterval() * 2)
+            move_pos_y = my_pos.y + target_vel.y * (globals.TickInterval() * 2)
+        end
+    else
+        if target_speed > 20 then
+            local vx = target_vel.x / target_speed
+            local vy = target_vel.y / target_speed
+            move_pos_x = target_pos.x + vx * 35
+            move_pos_y = target_pos.y + vy * 35
+        end
+    end
+
+    local dx = move_pos_x - my_pos.x
+    local dy = move_pos_y - my_pos.y
+    local dist = math.sqrt(dx*dx + dy*dy)
+    
+    if dist > 1.5 then
+        local va = cmd:GetViewAngles()
+        local move_yaw = math.deg(math.atan2(dy, dx))
+        local forward = math.cos(math.rad(move_yaw - va.y))
+        local side = math.sin(math.rad(move_yaw - va.y))
+        
+        local speed = 450
+        cmd:SetForwardMove(forward * speed)
+        cmd:SetSideMove(side * speed)
+    else
+        cmd:SetForwardMove(0)
+        cmd:SetSideMove(0)
+    end
+end
+
+
 local function pre_move(cmd)
 	pre_va = cmd:GetViewAngles()
+	pcall(handle_blockbot, cmd)
+
 
 	-- Read current active weapon Min Damage silently. No text/logs.
 	pcall(as_update_min_damage)
@@ -3657,8 +3760,13 @@ local function paint_indicators()
 		draw_line("VAC-NET ACTIVE", 255, 60, 60, 255, 1)
 	end
 
-	-- condition
+	if blockbot_target then
+		draw_line("BLOCKBOT", 210, 210, 210, 255, 1)
+	end
+
+	-- indicator
 	local cond = "STANDING"
+
 	if alive then
 		cond = ind_get_condition()
 	end
