@@ -2780,6 +2780,41 @@ local function bb_get_closest_enemy(lp)
     return closest, closest_dist
 end
 
+-- Find enemy we're standing on (head-lock mode)
+local function bb_get_enemy_under_us(lp)
+    local my = origin_of(lp)
+    if not my then return nil end
+    
+    local myteam = field_int(lp, "m_iTeamNum")
+    local best = nil
+    local best_dist = 999999
+    
+    for i = 1, #esp_targets do
+        local e = esp_targets[i]
+        if e and e ~= lp and is_live_player(e) then
+            local team = field_int(e, "m_iTeamNum")
+            if not (myteam ~= 0 and team ~= 0 and team == myteam) then
+                local p = origin_of(e)
+                if p then
+                    local height_diff = my.z - p.z
+                    -- Player height: 72 standing, 54 crouching
+                    if height_diff > 30 and height_diff < 95 then
+                        local dx = p.x - my.x
+                        local dy = p.y - my.y
+                        local dist_2d = math.sqrt(dx * dx + dy * dy)
+                        if dist_2d < 50 and dist_2d < best_dist then
+                            best_dist = dist_2d
+                            best = e
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return best, best_dist
+end
+
 -- Get enemy velocity
 local function bb_get_velocity(ent)
     local v
@@ -2790,10 +2825,13 @@ local function bb_get_velocity(ent)
     return { x = 0, y = 0, z = 0 }
 end
 
+local bb_is_head_locking = false
+
 local function bb_block(cmd, lp)
     if not g.block_bot:GetValue() then
         bb_release()
         BB.target = nil
+        bb_is_head_locking = false
         return
     end
     
@@ -2802,70 +2840,130 @@ local function bb_block(cmd, lp)
     if not on_ground then
         bb_release()
         BB.target = nil
+        bb_is_head_locking = false
         return
     end
     
-    -- Find or validate target
-    if not BB.target or not is_live_player(BB.target) then
-        local enemy, dist = bb_get_closest_enemy(lp)
-        if enemy and dist < 200 then
-            BB.target = enemy
-        else
-            bb_release()
-            BB.target = nil
-            return
+    local my = origin_of(lp)
+    if not my then
+        bb_release()
+        return
+    end
+    
+    -- Check if we're standing on someone's head first
+    local head_target, head_dist = bb_get_enemy_under_us(lp)
+    if head_target then
+        BB.target = head_target
+        bb_is_head_locking = true
+    else
+        bb_is_head_locking = false
+        -- If we don't have a valid target, find ground target
+        if not BB.target or not is_live_player(BB.target) then
+            local enemy, dist = bb_get_closest_enemy(lp)
+            if enemy and dist < 140 then
+                BB.target = enemy
+            else
+                bb_release()
+                BB.target = nil
+                return
+            end
         end
     end
     
-    -- Calculate positions
-    local my = origin_of(lp)
     local target_pos = origin_of(BB.target)
-    if not my or not target_pos then
+    if not target_pos then
         bb_release()
         return
     end
     
-    -- Predict target movement
-    local block_x, block_y = target_pos.x, target_pos.y
-    local vel = bb_get_velocity(BB.target)
-    local speed = math.sqrt(vel.x * vel.x + vel.y * vel.y)
-    
-    if speed > 15 then
-        local dir_x = vel.x / speed
-        local dir_y = vel.y / speed
-        block_x = block_x + dir_x * 60
-        block_y = block_y + dir_y * 60
-    end
-    
-    -- Calculate direction to block position
-    local dir_x = block_x - my.x
-    local dir_y = block_y - my.y
+    local dir_x = target_pos.x - my.x
+    local dir_y = target_pos.y - my.y
     local dist_2d = math.sqrt(dir_x * dir_x + dir_y * dir_y)
     
-    -- Check if already in position
-    if dist_2d < 35 then
-        bb_release()
-        return
+    if bb_is_head_locking then
+        -- HEAD-LOCK: center precisely on top of enemy
+        if dist_2d < 2 then
+            bb_release()
+            return
+        end
+        
+        -- Get view angles
+        local va = cmd:GetViewAngles()
+        local view_yaw = va.y or 0
+        
+        -- Calculate movement direction relative to view
+        local wish_yaw = math.deg(math.atan2(dir_y, dir_x))
+        local diff_yaw = math.rad(wish_yaw - view_yaw)
+        
+        local forward = math.cos(diff_yaw)
+        local side = math.sin(diff_yaw)
+        
+        -- Full W/A/S/D movement for head-lock
+        local press_w = forward > 0.1
+        local press_s = forward < -0.1
+        local press_a = side > 0.1
+        local press_d = side < -0.1
+        
+        bb_set_keys(press_w, press_a, press_s, press_d)
+    else
+        -- GROUND-BLOCK: stand in front of enemy to block their path
+        local vel = bb_get_velocity(BB.target)
+        local speed = math.sqrt(vel.x * vel.x + vel.y * vel.y)
+        local is_stationary = (speed < 15)
+        
+        -- Predict position in front of enemy's movement
+        local block_x, block_y = target_pos.x, target_pos.y
+        if not is_stationary then
+            local dir_x = vel.x / speed
+            local dir_y = vel.y / speed
+            -- Place block position ahead of target
+            block_x = block_x + dir_x * 60
+            block_y = block_y + dir_y * 60
+        end
+        
+        -- Recalculate direction to block position
+        dir_x = block_x - my.x
+        dir_y = block_y - my.y
+        dist_2d = math.sqrt(dir_x * dir_x + dir_y * dir_y)
+        
+        -- Check if already in blocking position
+        local should_move = true
+        if is_stationary then
+            -- If enemy is standing and we're close, stop
+            if dist_2d < 33 then
+                should_move = false
+            end
+        else
+            -- If enemy is moving and we're at the block spot, stop
+            if dist_2d < 4 then
+                should_move = false
+            end
+        end
+        
+        if not should_move then
+            bb_release()
+            return
+        end
+        
+        -- Get view angles
+        local va = cmd:GetViewAngles()
+        local view_yaw = va.y or 0
+        
+        -- Calculate movement direction relative to view
+        local wish_yaw = math.deg(math.atan2(dir_y, dir_x))
+        local diff_yaw = math.rad(wish_yaw - view_yaw)
+        
+        local forward = math.cos(diff_yaw)
+        local side = math.sin(diff_yaw)
+        
+        -- Ground block: use all keys to get to blocking position
+        local press_w = forward > 0.1
+        local press_s = forward < -0.1
+        local press_a = side > 0.1
+        local press_d = side < -0.1
+        
+        bb_set_keys(press_w, press_a, press_s, press_d)
     end
-    
-    -- Get view angles
-    local va = cmd:GetViewAngles()
-    local view_yaw = va.y or 0
-    
-    -- Calculate movement direction relative to view
-    local wish_yaw = math.deg(math.atan2(dir_y, dir_x))
-    local diff_yaw = math.rad(wish_yaw - view_yaw)
-    
-    local forward = math.cos(diff_yaw)
-    local side = math.sin(diff_yaw)
-    
-    -- Determine which keys to press
-    local press_w = forward > 0.3
-    local press_s = forward < -0.3
-    local press_a = side > 0.3
-    local press_d = side < -0.3
-    
-    bb_set_keys(press_w, press_a, press_s, press_d)
 end
 
 local function pre_move(cmd)
