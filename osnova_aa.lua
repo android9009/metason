@@ -42,10 +42,9 @@ MISCTAB = MISCTAB or MISCROOT or TABM
 pcall(function() REGIONTAB = gui.Tab(MISCROOT, "aw_region_changer_tab", "Region") end)
 REGIONTAB = REGIONTAB or MISCROOT
 
--- Scripts Tab (Lua Scripts section)
-local SCRIPTSTAB
-pcall(function() SCRIPTSTAB = gui.Tab(gui.Reference("Lua Scripts"), "aw_scripts_tab", "Scripts") end)
-SCRIPTSTAB = SCRIPTSTAB or MISCTAB
+-- Scripts Window (bottom-right corner)
+local sw, sh = draw.GetScreenSize()
+local SCRIPTSWIN = gui.Window("aw_scripts_win", "Scripts", sw - 320, sh - 280, 300, 260)
 
 -- ============================================================
 -- constants
@@ -443,7 +442,7 @@ g.defensive_enable = gui.Checkbox(TAB, "aa_defensive_enable", "Enable Defensive 
 g.roundend_enable = gui.Checkbox(TAB, "aa_roundend_enable", "Enable Round End AA", false)
 
 -- Scripts Tab: Indicator Settings
-local scriptsgroup = gui.Groupbox(SCRIPTSTAB, "Indicator Settings", 16, 16, 287.5, 200)
+local scriptsgroup = gui.Groupbox(SCRIPTSWIN, "Indicator Settings", 16, 16, 268, 200)
 g.ind_x = gui.Slider(scriptsgroup, "scripts_ind_x", "Indicator X", 0, -500, 500, 1)
 g.ind_y = gui.Slider(scriptsgroup, "scripts_ind_y", "Indicator Y", 28, -500, 500, 1)
 g.ind_width = gui.Slider(scriptsgroup, "scripts_ind_width", "Indicator Width", 140, 50, 300, 1)
