@@ -923,6 +923,7 @@ function vote_on_event(ev)
 		VB.disco_at, VB.needed = vb_disco_at()
 		-- VB.needed = сколько нужно голосов "ЗА" для кика
 		-- VB.disco_at = при скольких голосах "ЗА" дизконнектиться
+		print("[VB] total=" .. (VB.teammates + 1) .. " teammates=" .. VB.teammates .. " disco_at=" .. tostring(VB.disco_at) .. " needed=" .. VB.needed)
 
 		local is_kick = issue:lower():find("kick") ~= nil
 		VB.is_kick_against_us = false
