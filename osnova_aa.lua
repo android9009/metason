@@ -795,16 +795,71 @@ local function vb_disco_at()
 end
 
 local function vb_count_teammates()
-	local lp = entities.GetLocalPlayer()
-	if not lp then return 0 end
-	local my_team = lp:GetTeamNumber()
-	local count = 0
-	local players = entities.FindByClass("CCSPlayer")
-	for i = 1, #players do
-		local p = players[i]
-		if p ~= lp and p:GetTeamNumber() == my_team then count = count + 1 end
+	-- 1) Пробуем FFI entity list (работает всегда, если есть AWCHANGER_API)
+	local ffi_v = rawget(_G, "ffi")
+	if type(ffi_v) == "table" then
+		local CAPI = rawget(_G, "AWCHANGER_API") or {}
+		local elist_off = CAPI.offsets and CAPI.offsets.dwEntityList
+		local lctrl_off = CAPI.offsets and CAPI.offsets.dwLocalPlayerController
+		if elist_off and lctrl_off then
+			local band, rshift = bit.band, bit.rshift
+			local function h_r_ptr(a)
+				local ok, v = pcall(function() return tonumber(ffi_v.cast("uint64_t*", a)[0]) end)
+				return ok and v or nil
+			end
+			local function h_valid(p) return p ~= nil and p > 0x10000 and p < 0x7FFFFFFFFFFF end
+			local base = mem.GetModuleBase("client.dll")
+			if base then
+				local lctrl = h_r_ptr(base + lctrl_off)
+				local elist = h_r_ptr(base + elist_off)
+				if h_valid(lctrl) and h_valid(elist) then
+					local my_team = 0
+					pcall(function() my_team = entities.GetLocalPlayer():GetTeamNumber() end)
+					if my_team == 0 then
+						-- fallback: читаем m_iTeamNum из контроллера (0x3EB)
+						pcall(function() my_team = ffi_v.cast("uint32_t*", lctrl + 0x3EB)[0] end)
+					end
+					if my_team > 0 then
+						local count = 0
+						for slot = 0, 63 do
+							local chunk = h_r_ptr(elist + 8 * rshift(slot, 9) + 16)
+							if not h_valid(chunk) then break end
+							local ctrl = h_r_ptr(chunk + 112 * band(slot, 0x1FF))
+							if h_valid(ctrl) and h_valid(h_r_ptr(ctrl)) then
+								if ctrl ~= lctrl then
+									local team = 0
+									pcall(function() team = ffi_v.cast("uint32_t*", ctrl + 0x3EB)[0] end)
+									if team == my_team then count = count + 1 end
+								end
+							end
+						end
+						if count > 0 then return count end
+					end
+				end
+			end
+		end
 	end
-	return count
+	-- 2) Fallback: entities.FindByClass (может не работать)
+	pcall(function()
+		local lp = entities.GetLocalPlayer()
+		if lp then
+			local my_team = lp:GetTeamNumber()
+			local players = entities.FindByClass("CCSPlayer")
+			if players and #players > 0 then
+				local count = 0
+				for i = 1, #players do
+					local p = players[i]
+					if p ~= lp and p:GetTeamNumber() == my_team then count = count + 1 end
+				end
+				if count > 0 then return count end
+			end
+		end
+	end)
+	-- 3) Ручной слайдер (пользователь выставляет сам)
+	if g.vb_manual_teammates then
+		return math.max(0, math.floor(g.vb_manual_teammates:GetValue() + 0.5))
+	end
+	return 4 -- fallback для 5v5
 end
 
 local function vb_reset()
@@ -966,6 +1021,7 @@ end
 -- Anti-kick / reconnect bypass firewall toggle
 g.anti_kick = gui.Checkbox(MISCTAB, "misc_anti_kick", "Anti-kick", false)
 g.vb_mode     = gui.Combobox(MISCTAB, "vb_mode", "VB Action", "Auto Leave", "Anti-Kick (AK)", "Vote No Only")
+g.vb_manual_teammates = gui.Slider(MISCTAB, "vb_manual_teammates", "VB Manual Teammates (fallback)", 4, 1, 9, 1)
 
 AK = AK or {
     enabled = false,
@@ -3886,6 +3942,10 @@ function on_draw()
 	-- Builder + scope + VAC-NET visibility
 	handle_builder_vis()
 	handle_vacnet()
+	-- VB manual teammates slider show/hide
+	if g.vb_manual_teammates then
+		g.vb_manual_teammates:SetInvisible(not g.vb_mode or not g.vb_mode:GetValue())
+	end
 
 	-- Duck Peek
 	local dk = g.duck_peek:GetValue()
