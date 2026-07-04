@@ -45,8 +45,9 @@ REGIONTAB = REGIONTAB or MISCROOT
 -- Scripts settings (Lua Scripts section)
 local LUASCRIPTS_REF
 pcall(function() LUASCRIPTS_REF = gui.Reference("Lua Scripts") end)
+local scriptsgb = nil
 if LUASCRIPTS_REF then
-    local scriptsgb = gui.Groupbox(LUASCRIPTS_REF, "Scripts", 16, 16, 287.5, 200)
+    scriptsgb = gui.Groupbox(LUASCRIPTS_REF, "Scripts", 16, 16, 287.5, 200)
 end
 
 -- ============================================================
@@ -443,6 +444,14 @@ g.master = gui.Checkbox(TAB, "aa_master", "Enable AA Builder", false)
 g.builder_mode = gui.Combobox(TAB, "aa_builder_mode", "AA Builder", "Builder", "Defensive Builder", "Round End AA")
 g.defensive_enable = gui.Checkbox(TAB, "aa_defensive_enable", "Enable Defensive Builder", false)
 g.roundend_enable = gui.Checkbox(TAB, "aa_roundend_enable", "Enable Round End AA", false)
+
+-- Scripts Groupbox position/size sliders (inside the Groupbox itself)
+if scriptsgb then
+g.scripts_x = gui.Slider(scriptsgb, "scripts_gb_x", "Position X", 16, 0, 800, 1)
+g.scripts_y = gui.Slider(scriptsgb, "scripts_gb_y", "Position Y", 16, 0, 600, 1)
+g.scripts_w = gui.Slider(scriptsgb, "scripts_gb_w", "Width", 287, 100, 600, 1)
+g.scripts_h = gui.Slider(scriptsgb, "scripts_gb_h", "Height", 200, 50, 500, 1)
+end
 
 -- Round End AA Yaw
 g.re_yaw = gui.Combobox(TAB, "aa_re_yaw", "Round End Yaw", "Off", "Static", "Random", "Spin")
@@ -3697,6 +3706,14 @@ end
 -- on_draw — main draw callback (refactored to fix >200 locals)
 -- ============================================================
 function on_draw()
+	-- Update Scripts Groupbox position/size from sliders
+	if scriptsgb and g.scripts_x then
+		scriptsgb:SetPosX(g.scripts_x:GetValue())
+		scriptsgb:SetPosY(g.scripts_y:GetValue())
+		scriptsgb:SetWidth(g.scripts_w:GetValue())
+		scriptsgb:SetHeight(g.scripts_h:GetValue())
+	end
+
 	-- viewmodel easing
 	local tx, ty, tz = g.vm_x:GetValue(), g.vm_y:GetValue(), g.vm_z:GetValue()
 	local s = 0.15
