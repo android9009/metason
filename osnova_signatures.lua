@@ -335,9 +335,25 @@ function SIG.get(name)
 	return SIG.DB[name]
 end
 
--- Безопасный низкоуровневый поиск (никогда не кидает ошибку)
+-- Безопасный низкоуровневый поиск (никогда не кидает ошибку).
+-- ВАЖНО: паттерны в этой базе используют одиночный "?" (формат IDA), а
+-- mem.FindPattern в Aimware ожидает двойной "??" для байта-маски (см. пример
+-- в доках: mem.FindPattern("client.dll", "C3 ?? CC")). Нормализуем тут один
+-- раз (по токенам через пробел), чтобы не переписывать все 298 паттернов вручную.
+local function normalize_pattern(pattern)
+	local parts = {}
+	for token in pattern:gmatch("%S+") do
+		if token == "?" then
+			parts[#parts + 1] = "??"
+		else
+			parts[#parts + 1] = token
+		end
+	end
+	return table.concat(parts, " ")
+end
+
 function SIG.find(module_name, pattern)
-	local ok, addr = pcall(function() return mem.FindPattern(module_name, pattern) end)
+	local ok, addr = pcall(function() return mem.FindPattern(module_name, normalize_pattern(pattern)) end)
 	if not ok or not addr or addr == 0 then return nil end
 	return tonumber(addr)
 end
