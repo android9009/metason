@@ -566,8 +566,6 @@ g.on_ladder    = gui.Checkbox(TAB2, "aa_on_ladder",    "Disable on Ladder",  tru
 g.on_use       = gui.Checkbox(TAB2, "aa_on_use",       "Disable on Use",     true)
 g.disable_shot = gui.Checkbox(TAB2, "aa_disable_shot", "Disable on Shot",    true)
 g.indicator    = gui.Checkbox(TAB2, "aa_indicator",    "Indicator",          true)
--- EXPERIMENTAL: показывает в индикаторе сколько живых тиммейтов осталось в команде
-g.team_count   = gui.Checkbox(TAB2, "aa_team_count",   "Team Count (Experimental)", false)
 
 -- VAC-NET preset: при включении ставит At Target, 3-Way 55°, delay 2, Custom Pitch 45° на все кондишны
 -- при выключении — возвращает все настройки обратно
@@ -3547,32 +3545,6 @@ local ind_dragging = false
 local ind_drag_off_x = 0
 local ind_drag_off_y = 0
 
--- EXPERIMENTAL: живые/всего тиммейтов в команде (для индикатора)
--- переиспользует ту же логику, что vb_count_teammates, но также считает
--- сколько из них ещё живы (is_live_player определена выше по файлу).
-local function ind_count_team()
-	local ok, lp = pcall(entities.GetLocalPlayer)
-	if not ok or not lp then return 0, 0 end
-	local my_team = 0
-	pcall(function() my_team = lp:GetTeamNumber() end)
-
-	local players = {}
-	pcall(function() players = entities.FindByClass("CCSPlayer") end)
-
-	local alive_n, total_n = 0, 0
-	for i = 1, #players do
-		local p = players[i]
-		if p and p ~= lp then
-			local ok2, t = pcall(function() return p:GetTeamNumber() end)
-			if ok2 and t == my_team then
-				total_n = total_n + 1
-				if is_live_player(p) then alive_n = alive_n + 1 end
-			end
-		end
-	end
-	return alive_n, total_n
-end
-
 local function paint_indicators()
 	if not g.indicator:GetValue() then return end
 
@@ -3648,7 +3620,6 @@ local function paint_indicators()
 	if g.vacnet:GetValue() then est_height = est_height + 14 + line_gap end
 	if dt then est_height = est_height + 14 + line_gap end
 	est_height = est_height + 14 + line_gap  -- condition
-	if g.team_count:GetValue() then est_height = est_height + 14 + line_gap end
 	local md_raw = rawget(_G, "AW_ACTIVE_MIN_DAMAGE")
 	if md_raw and md_raw.value then
 		local md_cat = md_raw.category or ""
@@ -3722,12 +3693,6 @@ local function paint_indicators()
 		cond = ind_get_condition()
 	end
 	draw_line("-" .. cond .. "-", 255, 255, 255, 255, 1)
-
-	-- Team Count (EXPERIMENTAL) — живые/всего тиммейтов
-	if g.team_count:GetValue() then
-		local t_alive, t_total = ind_count_team()
-		draw_line("TEAM " .. tostring(t_alive) .. "/" .. tostring(t_total), 120, 200, 255, 255, 1)
-	end
 
 	-- DT line — instant, no fade
 	if dt then
