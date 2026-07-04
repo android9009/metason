@@ -42,6 +42,13 @@ MISCTAB = MISCTAB or MISCROOT or TABM
 pcall(function() REGIONTAB = gui.Tab(MISCROOT, "aw_region_changer_tab", "Region") end)
 REGIONTAB = REGIONTAB or MISCROOT
 
+-- Scripts settings (Lua Scripts section)
+local LUASCRIPTS_REF
+pcall(function() LUASCRIPTS_REF = gui.Reference("Lua Scripts") end)
+if LUASCRIPTS_REF then
+    local scriptsgb = gui.Groupbox(LUASCRIPTS_REF, "Scripts", 16, 16, 287.5, 200)
+end
+
 -- ============================================================
 -- constants
 -- ============================================================
