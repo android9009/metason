@@ -15,35 +15,6 @@ local off = {}
 
 local DUMPER = "https://raw.githubusercontent.com/a2x/cs2-dumper/main/output/"
 
--- ============================================================
--- Централизованная база байтовых паттернов (osnova_signatures.lua).
--- Оффсеты netvar-полей по-прежнему тянутся с a2x/cs2-dumper (DUMPER выше) -
--- они не относятся к этой базе, там только сигнатуры для mem.FindPattern.
--- Если файл недоступен (нет сети/переехал) - все места ниже падают на
--- локальные hardcoded паттерны через оператор "or", так что чит не ломается.
--- ============================================================
-local SIG = nil
-pcall(function()
-    local src = http.Get("https://raw.githubusercontent.com/android9009/metason/main/osnova_signatures.lua")
-    if type(src) == "string" and #src > 500 then
-        local chunk = loadstring(src, "=osnova_signatures")
-        if chunk then
-            local ok, mod = pcall(chunk)
-            if ok and type(mod) == "table" then SIG = mod end
-        end
-    end
-end)
-
--- Достаёт паттерн по имени записи в базе, либо возвращает fallback, если
--- база недоступна или запись не найдена/устарела.
-local function sig_pattern(name, fallback)
-    if SIG then
-        local e = SIG.get(name)
-        if e and e.pattern then return e.pattern end
-    end
-    return fallback
-end
-
 local FIELDS = {
     m_pWeaponServices      = "m_pWeaponServices",
     m_hMyWeapons           = "m_hMyWeapons",
@@ -136,10 +107,8 @@ end
 do
     local cb = mem.GetModuleBase("client.dll")
     local eb = mem.GetModuleBase("engine2.dll")
-    -- имена в базе sigs: pEntityList / pLocalPlayerController (riprel-указатели,
-    -- тот же самый паттерн, что был захардкожен тут раньше)
-    off.dwEntityList            = sig_rva(cb, "client.dll",  sig_pattern("pEntityList", "48 89 0D ?? ?? ?? ?? E9 ?? ?? ?? ?? CC"), 7)
-    off.dwLocalPlayerController = sig_rva(cb, "client.dll",  sig_pattern("pLocalPlayerController", "48 8B 05 ?? ?? ?? ?? 41 89 BE"), 7)
+    off.dwEntityList            = sig_rva(cb, "client.dll",  "48 89 0D ?? ?? ?? ?? E9 ?? ?? ?? ?? CC", 7)
+    off.dwLocalPlayerController = sig_rva(cb, "client.dll",  "48 8B 05 ?? ?? ?? ?? 41 89 BE", 7)
     off.dwNetworkGameClient     = sig_rva(eb, "engine2.dll", "48 89 3D ?? ?? ?? ?? FF 87", 7)
     off.dwNetworkGameClient_signOnState = sig_disp("engine2.dll", "44 8B 81 ?? ?? ?? ?? 48 8D 0D")
     if not off.dwLocalPlayerController or not off.dwEntityList or not off.m_hMyWeapons then
@@ -177,17 +146,14 @@ end
 local function subclass_hash(def) return murmur2(tostring(def):lower(), 0x31415926) end
 
 local DLL = "client.dll"
--- client.dll
--- Паттерны берутся из централизованной базы osnova_signatures.lua (имена
--- записей: SetModel, UpdateSubClass, SetMeshGroupMask, RegenerateWeaponSkins),
--- с fallback на прежние hardcoded значения если база недоступна.
+-- client.dll 
 local sig = {
-    set_model      = sig_pattern("SetModel",              "40 53 48 83 EC ?? 48 8B D9 4C 8B C2 48 8B 0D ?? ?? ?? ?? 48 8D 54 24 40"),  -- CBaseModelEntity::SetModel
-    update_subclass= sig_pattern("UpdateSubClass",         "4C 8B DC 53 48 81 EC ?? ?? ?? ?? 48 8B 41"),                                 -- CEconItemView subclass refresh
-    set_mesh_mask  = sig_pattern("SetMeshGroupMask",       "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 48 8D 99 ?? ?? ?? ?? 48 8B 71"), -- CSkeletonInstance mesh mask
-    regen_skins    = sig_pattern("RegenerateWeaponSkins",  "48 83 EC ?? E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? 48 8B 10"),            -- regenerate custom skins
+    set_model      = "40 53 48 83 EC ?? 48 8B D9 4C 8B C2 48 8B 0D ?? ?? ?? ?? 48 8D 54 24 40",  -- CBaseModelEntity::SetModel
+    update_subclass= "4C 8B DC 53 48 81 EC ?? ?? ?? ?? 48 8B 41",                                 -- CEconItemView subclass refresh
+    set_mesh_mask  = "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 48 8D 99 ?? ?? ?? ?? 48 8B 71", -- CSkeletonInstance mesh mask
+    regen_skins    = "48 83 EC ?? E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? 48 8B 10",            -- regenerate custom skins
 }
--- a + 5 + rel32 -> CBodyComponent::SetBodyGroup (не найден в базе sigs - остаётся hardcoded)
+-- a + 5 + rel32 -> CBodyComponent::SetBodyGroup
 local SBG_SIG = "E8 ?? ?? ?? ?? EB 0C 48 8B CF"
 local fn, fnptr = {}, {}
 local function resolve()
