@@ -47,7 +47,7 @@ local LUASCRIPTS_REF
 pcall(function() LUASCRIPTS_REF = gui.Reference("Lua Scripts") end)
 local scriptsgb = nil
 if LUASCRIPTS_REF then
-    scriptsgb = gui.Groupbox(LUASCRIPTS_REF, "Scripts", 500, 400, 287, 200)
+    scriptsgb = gui.Groupbox(LUASCRIPTS_REF, "Scripts", 510, 308, 225, 200)
 end
 
 -- ============================================================
@@ -445,12 +445,9 @@ g.builder_mode = gui.Combobox(TAB, "aa_builder_mode", "AA Builder", "Builder", "
 g.defensive_enable = gui.Checkbox(TAB, "aa_defensive_enable", "Enable Defensive Builder", false)
 g.roundend_enable = gui.Checkbox(TAB, "aa_roundend_enable", "Enable Round End AA", false)
 
--- Scripts Groupbox position/size sliders (inside the Groupbox itself)
+-- Scripts Listbox: helpers selection
 if scriptsgb then
-g.scripts_x = gui.Slider(scriptsgb, "scripts_gb_x", "Position X", 500, 0, 1200, 1)
-g.scripts_y = gui.Slider(scriptsgb, "scripts_gb_y", "Position Y", 400, 0, 800, 1)
-g.scripts_w = gui.Slider(scriptsgb, "scripts_gb_w", "Width", 287, 100, 600, 1)
-g.scripts_h = gui.Slider(scriptsgb, "scripts_gb_h", "Height", 200, 50, 500, 1)
+g.scripts_list = gui.Listbox(scriptsgb, "scripts_helpers", 100, "Wallbang Helper", "Grenade Helper", "Sync")
 end
 
 -- Round End AA Yaw
@@ -3706,14 +3703,6 @@ end
 -- on_draw — main draw callback (refactored to fix >200 locals)
 -- ============================================================
 function on_draw()
-	-- Update Scripts Groupbox position/size from sliders
-	if scriptsgb and g.scripts_x then
-		scriptsgb:SetPosX(g.scripts_x:GetValue())
-		scriptsgb:SetPosY(g.scripts_y:GetValue())
-		scriptsgb:SetWidth(g.scripts_w:GetValue())
-		scriptsgb:SetHeight(g.scripts_h:GetValue())
-	end
-
 	-- viewmodel easing
 	local tx, ty, tz = g.vm_x:GetValue(), g.vm_y:GetValue(), g.vm_z:GetValue()
 	local s = 0.15
