@@ -1701,132 +1701,58 @@ pcall(function()
 end)
 
 -- ============================================================
--- Auto Revolver: when Ragebot > Main > Enabled is on and
--- holding R8 Revolver (def 64), automatically cycles LMB
--- via client.Command("+attack"/"-attack", true) — silent, no console spam
+-- Auto Revolver: when holding R8 Revolver (def 64),
+-- automatically cycles LMB via cmd:SetButtons in CreateMove
 -- ============================================================
-local rbot_master_ref = nil
-pcall(function()
-    local main = gui.Reference("Ragebot", "Main")
-    if not main then return end
-    for child in main:Children() do
-        local nm = ""
-        pcall(function() nm = child:GetName() end)
-        if nm == "Enabled" then rbot_master_ref = child; return end
-    end
-end)
+local ar_cm_active = false
 
--- Auto Revolver state
-local ar_lmb_down = false
-local ar_last_toggle = 0
-local AR_COCK_TIME  = 0.4   -- seconds to hold LMB (cock the hammer)
-local AR_GAP_TIME   = 0.25  -- seconds gap between shots
-
--- Get active weapon def index (with fallback if skin changer API unavailable)
-local function ar_get_weapon_def()
-    -- Try skin changer API first
-    local def = active_weapon_def_safe()
-    if def then return def end
-    
-    -- Fallback: read from entity props
+local function ar_createmove(cmd)
     local lp = entities.GetLocalPlayer()
-    if not lp then return nil end
+    if not lp then return end
     
-    local result = nil
-    -- Try GetPropEntity for m_hActiveWeapon, then read def index
-    pcall(function()
-        local wpn = lp:GetPropEntity("m_hActiveWeapon")
-        if wpn then
-            result = wpn:GetPropInt("m_iItemDefinitionIndex")
-        end
-    end)
-    if result then return result end
-    
-    -- Another fallback: GetFieldInt
-    pcall(function()
-        local wpn = lp:GetProp("m_hActiveWeapon")
-        if wpn and type(wpn) == "userdata" then
-            result = wpn:GetFieldInt("m_iItemDefinitionIndex")
-        end
-    end)
-    return result
-end
-
-local function ar_is_ragebot_enabled()
-    -- Try gui.GetValue first (most reliable in Aimware)
-    local v = nil
-    pcall(function() v = gui.GetValue("rbot.master") end)
-    if v == true or v == 1 or (type(v) == "number" and v ~= 0) then
-        return true
-    end
-    -- Try direct reference
-    if rbot_master_ref then
-        pcall(function() v = rbot_master_ref:GetValue() end)
-        if v == true or v == 1 or (type(v) == "number" and v ~= 0) then
-            return true
-        end
-    end
-    return false
-end
-
-local function ar_is_revolver()
-    local def = ar_get_weapon_def()
-    return def == 64
-end
-
-local function ar_tick()
-    -- Check: revolver in hands + alive
-    if not ar_is_revolver() then
-        if ar_lmb_down then
-            client.Command("-attack", true)
-            ar_lmb_down = false
-        end
-        ar_last_toggle = 0
-        return
-    end
-
-    -- Check alive
-    local lp = entities.GetLocalPlayer()
-    if not lp then
-        if ar_lmb_down then client.Command("-attack", true); ar_lmb_down = false end
-        return
-    end
     local alive = false
     pcall(function() alive = lp:IsAlive() end)
-    if not alive then
-        if ar_lmb_down then client.Command("-attack", true); ar_lmb_down = false end
-        ar_last_toggle = 0
-        return
+    if not alive then return end
+    
+    -- Check if holding revolver (def 64)
+    local def = nil
+    pcall(function()
+        local api = rawget(_G, "AWCHANGER_API")
+        if api and api.activeDef then def = api.activeDef() end
+    end)
+    -- Fallback: try entity props
+    if not def then
+        pcall(function()
+            local wpn = lp:GetPropEntity("m_hActiveWeapon")
+            if wpn then def = wpn:GetPropInt("m_iItemDefinitionIndex") end
+        end)
     end
-
-    local now = common.Time()
-
-    -- First run: start cocking
-    if ar_last_toggle == 0 then
-        client.Command("+attack", true)
-        ar_lmb_down = true
-        ar_last_toggle = now
-        return
+    if not def then
+        pcall(function()
+            local wpn = lp:GetProp("m_hActiveWeapon")
+            if wpn and type(wpn) == "userdata" then
+                def = wpn:GetFieldInt("m_iItemDefinitionIndex")
+            end
+        end)
     end
-
-    local elapsed = now - ar_last_toggle
-
-    if ar_lmb_down then
-        -- Cocking: hold +attack for AR_COCK_TIME, then release (fire)
-        if elapsed >= AR_COCK_TIME then
-            client.Command("-attack", true)
-            ar_lmb_down = false
-            ar_last_toggle = now
-        end
+    
+    if def ~= 64 then return end
+    
+    -- Simple cycle: 26 ticks cock (hold), 17 ticks release (fire + gap) = 43 tick cycle
+    local tick = globals.TickCount()
+    local cycle = tick % 43
+    
+    local buttons = cmd:GetButtons()
+    if cycle < 26 then
+        -- Cocking: hold IN_ATTACK
+        cmd:SetButtons(bit.bor(buttons, IN_ATTACK))
     else
-        -- Released: wait AR_GAP_TIME, then cock again
-        if elapsed >= AR_GAP_TIME then
-            client.Command("+attack", true)
-            ar_lmb_down = true
-            ar_last_toggle = now
-        end
+        -- Released: remove IN_ATTACK (fires on transition from held to released)
+        cmd:SetButtons(bit.band(buttons, bit.bnot(IN_ATTACK)))
     end
 end
+
+callbacks.Register("CreateMove", "osnova_auto_revolver", ar_createmove)
 
 -- DT recharge tracking
 local dt_fire_time = 0       -- globals.CurTime() when last DT shot fired
@@ -2813,9 +2739,6 @@ local function pre_move(cmd)
 		if alp then pcall(function() alive = alp:IsAlive() end) end
 		if alive then as_air_stop(cmd, alp) else as_auto_restore(); as_release(false) end
 	end
-
-	-- Auto Revolver: silent +attack/-attack cycle for R8 Revolver (must be in PreMove)
-	pcall(ar_tick)
 
 	-- duck peek assist (bind held). stay crouched, and only stand to peek when
 	-- the cheat sees a target (enemy on screen) but we haven't been able to fire
