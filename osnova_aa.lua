@@ -47,7 +47,7 @@ local LUASCRIPTS_REF
 pcall(function() LUASCRIPTS_REF = gui.Reference("Lua Scripts") end)
 local scriptsgb = nil
 if LUASCRIPTS_REF then
-    scriptsgb = gui.Groupbox(LUASCRIPTS_REF, "Scripts", 510, 308, 222, 300)
+    scriptsgb = gui.Groupbox(LUASCRIPTS_REF, "Scripts", 510, 308, 222, 292)
 end
 
 -- ============================================================
@@ -447,11 +447,10 @@ g.roundend_enable = gui.Checkbox(TAB, "aa_roundend_enable", "Enable Round End AA
 
 -- Scripts Listbox: helpers selection
 if scriptsgb then
-g.scripts_list = gui.Listbox(scriptsgb, "scripts_helpers", 160, "Wallbang Helper", "Grenade Helper", "Sync")
+g.scripts_list = gui.Listbox(scriptsgb, "scripts_helpers", 152, "Wallbang Helper", "Grenade Helper", "Sync")
 g.wb_enable = gui.Checkbox(scriptsgb, "scripts_wb_enable", "Wallbang Helper - Enable", false)
 g.gr_enable = gui.Checkbox(scriptsgb, "scripts_gr_enable", "Grenade Helper - Enable", false)
 g.sync_enable = gui.Checkbox(scriptsgb, "scripts_sync_enable", "Sync - Enable", false)
-g.list_height = gui.Slider(scriptsgb, "scripts_list_height", "Listbox Height", 160, 50, 400, 1)
 end
 
 -- Round End AA Yaw
@@ -3707,15 +3706,12 @@ end
 -- on_draw — main draw callback (refactored to fix >200 locals)
 -- ============================================================
 function on_draw()
-	-- Scripts: show/hide enable checkboxes based on listbox selection + update listbox height
+	-- Scripts: show/hide enable checkboxes based on listbox selection
 	if g.scripts_list and g.wb_enable then
 		local sel = g.scripts_list:GetValue()
 		g.wb_enable:SetInvisible(sel ~= 0)
 		g.gr_enable:SetInvisible(sel ~= 1)
 		g.sync_enable:SetInvisible(sel ~= 2)
-		if g.list_height then
-			g.scripts_list:SetHeight(g.list_height:GetValue())
-		end
 	end
 
 	-- viewmodel easing
