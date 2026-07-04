@@ -2775,21 +2775,27 @@ local function handle_blockbot(cmd)
         local forward = math.cos(math.rad(move_yaw - va.y))
         local side = math.sin(math.rad(move_yaw - va.y))
         
-        -- Устанавливаем значения движения в UserCmd (чтобы персонаж реально шел)
+        -- Выключаем авто-стоп чита, чтобы он не мешал нам идти
+        as_auto_off()
+
+        -- Устанавливаем движение в UserCmd
         cmd:SetForwardMove(forward * 450)
         cmd:SetSideMove(side * 450)
 
-        -- Эмулируем нажатия кнопок для системы Air Stop и обхода анти-читов
-        as_set_script_keys(
-            forward > 0.45,  -- W
-            forward < -0.45, -- S
-            side > 0.45,     -- A
-            side < -0.45     -- D
-        )
+        -- Эмуляция нажатий как в Air Stop (физический WASD)
+        -- Но без "перезагрузки" клавиш каждый тик (для плавности)
+        local w, s, a, d = forward > 0.45, forward < -0.45, side > 0.45, side < -0.45
+        
+        if w ~= AS.keys.w then as_key(VK_W, w); AS.keys.w = w end
+        if s ~= AS.keys.s then as_key(VK_S, s); AS.keys.s = s end
+        if a ~= AS.keys.a then as_key(VK_A, a); AS.keys.a = a end
+        if d ~= AS.keys.d then as_key(VK_D, d); AS.keys.d = d end
+        
+        AS.active = true
     else
         cmd:SetForwardMove(0)
         cmd:SetSideMove(0)
-        as_set_script_keys(false, false, false, false)
+        as_release(true)
     end
 end
 
