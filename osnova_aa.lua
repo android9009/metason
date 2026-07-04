@@ -749,204 +749,66 @@ function vote_log(text)
 	end
 end
 
--- Vote Bypass state
--- Наш UserID (запоминаем при первом выстреле/спавне)
-MY_USERID = nil
-
+-- Vote Reveal state (только для лога, без авто-действий)
 VB = VB or {
-	active = false,
-	is_kick_against_us = false,
-	target = "",
-	teammates = 0,
-	needed = 2,
 	yes = 0,
 	no = 0,
 	voters = {},
-	action_taken = false,
-	vote_queued = false,
-	vote_queued_tick = 0,
 }
-
--- Таблица дисконнекта по твоей логике:
--- total = вся команда (включая тебя)
--- disco_at = при скольких голосах "ЗА" дизконнектиться (-1 = никогда)
--- needed = сколько нужно "ЗА" чтобы кик прошёл
-local VB_DISCO = {
-	[1] = { disco = -1, needed = 0 },  -- только я
-	[2] = { disco = -1, needed = 0 },  -- я + 1 тиммейт
-	[3] = { disco = 0,  needed = 2 },  -- я + 2 тиммейта → сразу дизконнект
-	[4] = { disco = 2,  needed = 3 },  -- при 2 голосах
-	[5] = { disco = 3,  needed = 3 },  -- при 3 голосах
-	[6] = { disco = 4,  needed = 4 },  -- при 4 голосах
-	[7] = { disco = 4,  needed = 4 },  -- при 4 голосах
-	[8] = { disco = 5,  needed = 5 },  -- при 5 голосах
-}
-
-local function vb_total_in_team()
-	-- сколько всего человек в команде (включая нас)
-	return VB.teammates + 1
-end
-
-local function vb_disco_at()
-	local total = vb_total_in_team()
-	local cfg = VB_DISCO[total]
-	if cfg then return cfg.disco, cfg.needed end
-	-- fallback на всякий случай
-	local needed = math.floor((total) / 2) + 1
-	return needed - 1, needed
-end
-
-local function vb_count_teammates()
-	local lp = entities.GetLocalPlayer()
-	if not lp then return 0 end
-	local my_team = lp:GetTeamNumber()
-	local count = 0
-	local players = entities.FindByClass("CCSPlayer")
-	for i = 1, #players do
-		local p = players[i]
-		if p ~= lp and p:GetTeamNumber() == my_team then count = count + 1 end
-	end
-	return count
-end
 
 local function vb_reset()
-	VB.active = false
-	VB.is_kick_against_us = false
-	VB.target = ""
 	VB.yes = 0
 	VB.no = 0
 	VB.voters = {}
-	VB.action_taken = false
-	VB.vote_queued = false
-	VB.vote_queued_tick = 0
-	VB.disco_at = -1
-	VB.needed = 0
-end
-
-local function vb_take_action()
-	if VB.action_taken then return end
-	VB.action_taken = true
-	local mode = 0
-	if g.vb_mode then mode = g.vb_mode:GetValue() end
-	if mode == 0 then
-		client.Command("disconnect", true)
-	elseif mode == 1 then
-		if rawget(_G, "AK") and AK.sync then
-			AK.sync(true)
-		else
-			client.Command("disconnect", true)
-		end
-	else
-		client.Command("vote 2", true)
-	end
-end
-
--- Отложенный голос "НЕТ" (через 8 тиков после старта голосования)
-local function vb_queue_vote()
-	VB.vote_queued = true
-	VB.vote_queued_tick = globals.TickCount() + 8
-end
-
-local function vb_process_queue()
-	if not VB.vote_queued then return end
-	if globals.TickCount() < VB.vote_queued_tick then return end
-	VB.vote_queued = false
-	client.Command("vote 2", true)
 end
 
 function vote_on_event(ev)
 	local name = nil
 	pcall(function() name = ev:GetName() end)
 
-	-- Vote Bypass logic (работает всегда)
 	if name == "vote_started" then
 		vb_reset()
-		VB.active = true
-		-- param1 — это UserID цели (int), не имя!
 		local target_userid = vote_event_int(ev, "param1")
 		local issue = vote_event_string(ev, "issue")
-		VB.target = tostring(target_userid)
-		VB.teammates = vb_count_teammates()
-		VB.disco_at, VB.needed = vb_disco_at()
-		-- VB.needed = сколько нужно голосов "ЗА" для кика
-		-- VB.disco_at = при скольких голосах "ЗА" дизконнектиться
-
-		local is_kick = issue:lower():find("kick") ~= nil
-		VB.is_kick_against_us = false
-		if is_kick and target_userid > 0 and MY_USERID then
-			-- Сравниваем UserID цели с НАШИМ UserID
-			VB.is_kick_against_us = (target_userid == MY_USERID)
-			if VB.is_kick_against_us then
-				-- Отложенный голос "НЕТ" (через ~8 тиков, чтобы сервер успел принять)
-				vb_queue_vote()
-			end
-		end
 
 		-- Лог
 		if g.logs_vote and g.logs_vote:GetValue() then
 			local who = vote_player_name(ev, "entityid", "initiator", "userid")
 			local clean_issue = vote_clean_issue(issue)
-			local against = VB.is_kick_against_us and " [AGAINST YOU! ← auto voting NO]" or ""
 			local target_name = vote_target_from_disp(ev) or (target_userid > 0 and vote_name_by_userid(target_userid)) or tostring(target_userid)
 			if target_name ~= "" and target_name ~= "0" then
-				vote_log(who .. " started: " .. clean_issue .. " (Target: " .. target_name .. ") | need " .. VB.needed .. " yes" .. against)
+				vote_log(who .. " started: " .. clean_issue .. " (Target: " .. target_name .. ")")
 			else
-				vote_log(who .. " started: " .. clean_issue .. " | need " .. VB.needed .. " yes" .. against)
+				vote_log(who .. " started: " .. clean_issue)
 			end
 		end
 
 	elseif name == "vote_cast" then
-		if VB.active then
-			-- ВАЖНО: как и в femboytap, vote_cast использует userid, а не entityid!
-			local who = vote_player_name(ev, "userid", "entityid")
-			-- vote_option может быть int или string
-			local opt = vote_event_int(ev, "vote_option")
-			if opt == 0 and vote_event_string(ev, "vote_option") ~= "0" then
-				-- если int не прочитался, пробуем string
-				local opt_str = vote_event_string(ev, "vote_option"):lower()
-				if opt_str == "yes" or opt_str == "1" then opt = 0
-				elseif opt_str == "no" or opt_str == "2" then opt = 1
-				else opt = 2 end
-			end
-			VB.voters[#VB.voters + 1] = {name = who, option = opt}
+		local who = vote_player_name(ev, "userid", "entityid")
+		-- vote_option может быть int или string
+		local opt = vote_event_int(ev, "vote_option")
+		if opt == 0 and vote_event_string(ev, "vote_option") ~= "0" then
+			-- если int не прочитался, пробуем string
+			local opt_str = vote_event_string(ev, "vote_option"):lower()
+			if opt_str == "yes" or opt_str == "1" then opt = 0
+			elseif opt_str == "no" or opt_str == "2" then opt = 1
+			else opt = 2 end
+		end
+		VB.voters[#VB.voters + 1] = {name = who, option = opt}
 
-			if opt == 0 then
-				VB.yes = VB.yes + 1
-				if g.logs_vote and g.logs_vote:GetValue() then
-					vote_log(who .. " voted YES (F1) [" .. VB.yes .. "/" .. VB.needed .. "]")
-				end
-			elseif opt == 1 then
-				VB.no = VB.no + 1
-				if g.logs_vote and g.logs_vote:GetValue() then
-					vote_log(who .. " voted NO (F2)")
-				end
-			else
-				if g.logs_vote and g.logs_vote:GetValue() then
-					vote_log(who .. " chose option " .. tostring(opt))
-				end
+		if opt == 0 then
+			VB.yes = VB.yes + 1
+			if g.logs_vote and g.logs_vote:GetValue() then
+				vote_log(who .. " voted YES (F1) [" .. VB.yes .. "]")
 			end
-
-			-- Bypass: по твоей таблице
-			local yes_now = VB.yes    -- сколько уже голосов "ЗА"
-			local disco = VB.disco_at -- при скольких дизконнектиться
-			if VB.is_kick_against_us and not VB.action_taken and disco >= 0 and yes_now >= disco then
-				if g.logs_vote and g.logs_vote:GetValue() then
-					if disco == 0 then
-						vote_log("Kick started against you — disconnecting immediately!")
-					else
-						vote_log("Kick at " .. VB.needed .. " votes — disconnecting at " .. yes_now .. "/" .. VB.needed)
-					end
-				end
-				vb_take_action()
+		elseif opt == 1 then
+			VB.no = VB.no + 1
+			if g.logs_vote and g.logs_vote:GetValue() then
+				vote_log(who .. " voted NO (F2)")
 			end
 		else
-			-- Неактивно — просто логируем
 			if g.logs_vote and g.logs_vote:GetValue() then
-				local who = vote_player_name(ev, "userid", "entityid")
-				local opt = vote_event_int(ev, "vote_option")
-				if opt == 0 then vote_log(who .. " voted YES (F1)")
-				elseif opt == 1 then vote_log(who .. " voted NO (F2)")
-				else vote_log(who .. " chose option " .. tostring(opt)) end
+				vote_log(who .. " chose option " .. tostring(opt))
 			end
 		end
 
@@ -954,7 +816,6 @@ function vote_on_event(ev)
 		if g.logs_vote and g.logs_vote:GetValue() then
 			vote_log("Vote ended: PASSED [" .. VB.yes .. " yes / " .. VB.no .. " no]")
 		end
-		if VB.is_kick_against_us and not VB.action_taken then vb_take_action() end
 		vb_reset()
 
 	elseif name == "vote_failed" then
@@ -967,7 +828,6 @@ end
 
 -- Anti-kick / reconnect bypass firewall toggle
 g.anti_kick = gui.Checkbox(MISCTAB, "misc_anti_kick", "Anti-kick", false)
-g.vb_mode     = gui.Combobox(MISCTAB, "vb_mode", "VB Action", "Auto Leave", "Anti-Kick (AK)", "Vote No Only")
 
 AK = AK or {
     enabled = false,
@@ -3910,7 +3770,6 @@ function on_draw()
 	draw_screen_logs()
 	rg_sync()
 	pcall(function() AK.sync(g.anti_kick:GetValue()) end)
-	pcall(vb_process_queue)
 
 	-- Buy Bot visibility
 	local bb_on = g.buybot_enable:GetValue()
@@ -3978,8 +3837,6 @@ function on_event(event)
 				duck_cd_until  = globals.TickCount() + DUCK_COOLDOWN_TICKS
 				anti_nix_last_shot_tick = globals.TickCount()
 				as_pause(AIR_STOP_SHOT_DELAY)
-				-- Запоминаем наш UserID для Vote Bypass
-				if uid > 0 then MY_USERID = uid end
 			end
 		end)
 		if not ok then
@@ -4001,13 +3858,6 @@ function on_event(event)
 			end
 		end
 	elseif name == "player_hurt" then
-		-- Резервно запоминаем UserID при получении/нанесении урона
-		pcall(function()
-			local attacker = event:GetInt("attacker")
-			if attacker > 0 and client.GetPlayerIndexByUserID(attacker) == client.GetLocalPlayerIndex() then
-				if not MY_USERID then MY_USERID = attacker end
-			end
-		end)
 		pcall(function()
 			local by_me = client.GetPlayerIndexByUserID(event:GetInt("attacker")) == client.GetLocalPlayerIndex()
 			if by_me and event:GetInt("health") <= 0 then
@@ -4114,7 +3964,6 @@ callbacks.Register("Unload", "osnova_aa_unload", function()
     _G.AK = nil
     _G.RG = nil
     _G.VM = nil
-    _G.MY_USERID = nil
     _G.VB = nil
 
     print("[osnova] AA Builder unloaded and cleaned")
