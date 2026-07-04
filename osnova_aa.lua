@@ -1702,8 +1702,8 @@ end)
 
 -- ============================================================
 -- Auto Revolver: when Ragebot > Main > Enabled is on and
--- holding R8 Revolver (def 64), automatically click LMB
--- (cock → release → fire cycle) via mouse_event
+-- holding R8 Revolver (def 64), automatically cycles LMB
+-- via cmd:SetButtons (cock → release → fire)
 -- ============================================================
 local rbot_master_ref = nil
 pcall(function()
@@ -1716,37 +1716,13 @@ pcall(function()
     end
 end)
 
-local AR_FFI = rawget(_G, "ffi")
-if AR_FFI then
-    pcall(function()
-        AR_FFI.cdef[[
-            void mouse_event(unsigned long dwFlags, unsigned long dx, unsigned long dy, unsigned long dwData, void* dwExtraInfo);
-        ]]
-    end)
-end
+-- Auto Revolver state
+local ar_phase = 0        -- 0 = idle, 1 = cocking (LMB held), 2 = released (fired)
+local ar_phase_start = 0  -- tick when current phase started
 
-local AR_LEFTDOWN = 0x0002
-local AR_LEFTUP   = 0x0004
-
-local ar_lmb_down = false
-local ar_last_toggle = 0
--- Timing: 0.4s hold (cock) + 0.25s release (fire + gap) = 0.65s cycle
-local AR_HOLD_TIME   = 0.4
-local AR_RELEASE_TIME = 0.25
-
-local function ar_mouse_lmb(down)
-    if not AR_FFI then return end
-    pcall(function()
-        AR_FFI.C.mouse_event(down and AR_LEFTDOWN or AR_LEFTUP, 0, 0, 0, nil)
-    end)
-    ar_lmb_down = down
-end
-
-local function ar_release()
-    if ar_lmb_down then
-        ar_mouse_lmb(false)
-    end
-end
+-- Timing in ticks (64 tick)
+local AR_COCK_TICKS  = 26  -- ~0.4s hold LMB to cock
+local AR_GAP_TICKS   = 16  -- ~0.25s gap between shots
 
 local function ar_is_ragebot_enabled()
     if rbot_master_ref then
@@ -1757,7 +1733,6 @@ local function ar_is_ragebot_enabled()
         end
         return false
     end
-    -- fallback: try gui.GetValue
     local v = nil
     pcall(function() v = gui.GetValue("rbot.master") end)
     return v == true or v == 1 or (type(v) == "number" and v ~= 0)
@@ -1765,44 +1740,54 @@ end
 
 local function ar_is_revolver()
     local def = active_weapon_def_safe()
-    return def == 64
+    if def == 64 then return true end
+    -- fallback: check weapon type
+    local lp = entities.GetLocalPlayer()
+    if not lp then return false end
+    local wt = -1
+    pcall(function() wt = lp:GetWeaponType() end)
+    -- revolver weapon type is usually 1 (pistol) but def check is primary
+    return false
 end
 
-local function ar_tick()
-    -- Only active when ragebot master is on and holding revolver
+local function ar_tick_premove(cmd)
     if not ar_is_ragebot_enabled() or not ar_is_revolver() then
-        ar_release()
-        ar_last_toggle = 0
+        ar_phase = 0
+        ar_phase_start = 0
         return
     end
 
-    -- Check alive
     local lp = entities.GetLocalPlayer()
-    if not lp then ar_release(); return end
+    if not lp then ar_phase = 0; return end
     local alive = false
     pcall(function() alive = lp:IsAlive() end)
-    if not alive then ar_release(); ar_last_toggle = 0; return end
+    if not alive then ar_phase = 0; ar_phase_start = 0; return end
 
-    local now = globals.CurTime()
-    if ar_last_toggle == 0 then
-        -- Start: press LMB
-        ar_mouse_lmb(true)
-        ar_last_toggle = now
-        return
-    end
+    local tick = globals.TickCount()
+    local buttons = cmd:GetButtons()
 
-    local elapsed = now - ar_last_toggle
-    if ar_lmb_down then
-        -- LMB is held (cocking) — release after AR_HOLD_TIME
-        if elapsed >= AR_HOLD_TIME then
-            ar_mouse_lmb(false)
-            ar_last_toggle = now
+    if ar_phase == 0 then
+        -- Start cocking: press LMB
+        cmd:SetButtons(bit.bor(buttons, IN_ATTACK))
+        ar_phase = 1
+        ar_phase_start = tick
+    elseif ar_phase == 1 then
+        -- Cocking: keep LMB held
+        cmd:SetButtons(bit.bor(buttons, IN_ATTACK))
+        if tick - ar_phase_start >= AR_COCK_TICKS then
+            -- Release LMB → fire
+            cmd:SetButtons(bit.band(buttons, bit.bnot(IN_ATTACK)))
+            ar_phase = 2
+            ar_phase_start = tick
         end
-    else
-        -- LMB is released (fired) — press again after AR_RELEASE_TIME
-        if elapsed >= AR_RELEASE_TIME then
-            ar_mouse_lmb(true)
-            ar_last_toggle = now
+    elseif ar_phase == 2 then
+        -- Released (fired): keep LMB off, wait for gap
+        cmd:SetButtons(bit.band(buttons, bit.bnot(IN_ATTACK)))
+        if tick - ar_phase_start >= AR_GAP_TICKS then
+            -- Start cocking again
+            cmd:SetButtons(bit.bor(buttons, IN_ATTACK))
+            ar_phase = 1
+            ar_phase_start = tick
         end
     end
 end
@@ -2792,6 +2777,9 @@ local function pre_move(cmd)
 		if alp then pcall(function() alive = alp:IsAlive() end) end
 		if alive then as_air_stop(cmd, alp) else as_auto_restore(); as_release(false) end
 	end
+
+	-- Auto Revolver: cycles LMB via cmd:SetButtons when holding R8 Revolver
+	pcall(function() ar_tick_premove(cmd) end)
 
 	-- duck peek assist (bind held). stay crouched, and only stand to peek when
 	-- the cheat sees a target (enemy on screen) but we haven't been able to fire
@@ -3797,9 +3785,6 @@ end
 -- on_draw — main draw callback (refactored to fix >200 locals)
 -- ============================================================
 function on_draw()
-	-- Auto Revolver tick
-	pcall(ar_tick)
-
 	-- viewmodel easing
 	local tx, ty, tz = g.vm_x:GetValue(), g.vm_y:GetValue(), g.vm_z:GetValue()
 	local s = 0.15
@@ -3976,7 +3961,6 @@ callbacks.Register("Unload", "aa_air_stop_unload", function()
 	pcall(function() if AK and AK.enabled then AK.sync(false) end end)
 	as_auto_restore()
 	as_release(false)
-	ar_release()
 end)
 
 -- ============================================================
