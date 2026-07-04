@@ -795,6 +795,13 @@ local function vb_disco_at()
 end
 
 local function vb_count_teammates()
+	-- 0) Если включён ручной режим — сразу берём из слайдера
+	if g.vb_manual_enable and g.vb_manual_enable:GetValue() then
+		if g.vb_manual_teammates then
+			return math.max(0, math.floor(g.vb_manual_teammates:GetValue() + 0.5))
+		end
+		return 4
+	end
 	-- 1) Пробуем FFI entity list (работает всегда, если есть AWCHANGER_API)
 	local ffi_v = rawget(_G, "ffi")
 	if type(ffi_v) == "table" then
@@ -816,7 +823,6 @@ local function vb_count_teammates()
 					local my_team = 0
 					pcall(function() my_team = entities.GetLocalPlayer():GetTeamNumber() end)
 					if my_team == 0 then
-						-- fallback: читаем m_iTeamNum из контроллера (0x3EB)
 						pcall(function() my_team = ffi_v.cast("uint32_t*", lctrl + 0x3EB)[0] end)
 					end
 					if my_team > 0 then
@@ -839,7 +845,7 @@ local function vb_count_teammates()
 			end
 		end
 	end
-	-- 2) Fallback: entities.FindByClass (может не работать)
+	-- 2) Fallback: entities.FindByClass
 	pcall(function()
 		local lp = entities.GetLocalPlayer()
 		if lp then
@@ -855,11 +861,9 @@ local function vb_count_teammates()
 			end
 		end
 	end)
-	-- 3) Ручной слайдер (пользователь выставляет сам)
-	if g.vb_manual_teammates then
-		return math.max(0, math.floor(g.vb_manual_teammates:GetValue() + 0.5))
-	end
-	return 4 -- fallback для 5v5
+	-- 3) Всё сломалось — возвращаем 0, авто не работает
+	print("[VB] WARNING: could not detect teammates automatically! Enable manual override in Misc > Features")
+	return 0
 end
 
 local function vb_reset()
@@ -1022,7 +1026,8 @@ end
 -- Anti-kick / reconnect bypass firewall toggle
 g.anti_kick = gui.Checkbox(MISCTAB, "misc_anti_kick", "Anti-kick", false)
 g.vb_mode     = gui.Combobox(MISCTAB, "vb_mode", "VB Action", "Auto Leave", "Anti-Kick (AK)", "Vote No Only")
-g.vb_manual_teammates = gui.Slider(MISCTAB, "vb_manual_teammates", "VB Manual Teammates (fallback)", 4, 1, 9, 1)
+g.vb_manual_enable = gui.Checkbox(MISCTAB, "vb_manual_enable", "VB Manual Teammates (override)", false)
+g.vb_manual_teammates = gui.Slider(MISCTAB, "vb_manual_teammates", "VB Manual Teammates", 4, 1, 9, 1)
 
 AK = AK or {
     enabled = false,
@@ -3943,9 +3948,13 @@ function on_draw()
 	-- Builder + scope + VAC-NET visibility
 	handle_builder_vis()
 	handle_vacnet()
-	-- VB manual teammates slider show/hide
+	-- VB manual teammates checkbox + slider show/hide
+	if g.vb_manual_enable then
+		g.vb_manual_enable:SetInvisible(not g.vb_mode or not g.vb_mode:GetValue())
+	end
 	if g.vb_manual_teammates then
-		g.vb_manual_teammates:SetInvisible(not g.vb_mode or not g.vb_mode:GetValue())
+		local show = g.vb_mode and g.vb_mode:GetValue() and g.vb_manual_enable and g.vb_manual_enable:GetValue()
+		g.vb_manual_teammates:SetInvisible(not show)
 	end
 
 	-- Duck Peek
