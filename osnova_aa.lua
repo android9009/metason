@@ -1775,8 +1775,8 @@ local function ar_is_revolver()
 end
 
 local function ar_tick()
-    -- Check conditions
-    if not ar_is_ragebot_enabled() or not ar_is_revolver() then
+    -- Check: revolver in hands + alive
+    if not ar_is_revolver() then
         if ar_lmb_down then
             client.Command("-attack", true)
             ar_lmb_down = false
