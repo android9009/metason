@@ -42,18 +42,6 @@ MISCTAB = MISCTAB or MISCROOT or TABM
 pcall(function() REGIONTAB = gui.Tab(MISCROOT, "aw_region_changer_tab", "Region") end)
 REGIONTAB = REGIONTAB or MISCROOT
 
--- Scripts Tab (inside Lua Scripts section)
-local SCRIPTSTAB
-local lua_ref_names = {"Lua Scripts", "Lua", "LUA", "Scripts", "LuaScript"}
-for _, refname in ipairs(lua_ref_names) do
-    if not SCRIPTSTAB then
-        pcall(function()
-            local ref = gui.Reference(refname)
-            if ref then SCRIPTSTAB = gui.Tab(ref, "aw_scripts_tab", "Scripts") end
-        end)
-    end
-end
-
 -- ============================================================
 -- constants
 -- ============================================================
@@ -448,19 +436,6 @@ g.master = gui.Checkbox(TAB, "aa_master", "Enable AA Builder", false)
 g.builder_mode = gui.Combobox(TAB, "aa_builder_mode", "AA Builder", "Builder", "Defensive Builder", "Round End AA")
 g.defensive_enable = gui.Checkbox(TAB, "aa_defensive_enable", "Enable Defensive Builder", false)
 g.roundend_enable = gui.Checkbox(TAB, "aa_roundend_enable", "Enable Round End AA", false)
-
--- Scripts Tab: settings
-if SCRIPTSTAB then
-g.ind_x = gui.Slider(SCRIPTSTAB, "scripts_ind_x", "Indicator X", 0, -500, 500, 1)
-g.ind_y = gui.Slider(SCRIPTSTAB, "scripts_ind_y", "Indicator Y", 28, -500, 500, 1)
-g.ind_width = gui.Slider(SCRIPTSTAB, "scripts_ind_width", "Indicator Width", 140, 50, 300, 1)
-g.ind_height = gui.Slider(SCRIPTSTAB, "scripts_ind_height", "Indicator Height", 12, 8, 24, 1)
-else
-g.ind_x = { GetValue = function() return 0 end, SetValue = function() end }
-g.ind_y = { GetValue = function() return 28 end, SetValue = function() end }
-g.ind_width = { GetValue = function() return 140 end, SetValue = function() end }
-g.ind_height = { GetValue = function() return 12 end, SetValue = function() end }
-end
 
 -- Round End AA Yaw
 g.re_yaw = gui.Combobox(TAB, "aa_re_yaw", "Round End Yaw", "Off", "Static", "Random", "Spin")
@@ -3529,7 +3504,6 @@ end
 -- Indicator (metasoon-style, draggable, centered)
 -- ============================================================
 local ind_font = draw.CreateFont("Verdana", 12, 800)
-local ind_last_height = 12
 
 -- drag state (persisted across frames)
 local ind_drag_x = 0   -- offset from center
@@ -3541,8 +3515,8 @@ local ind_drag_off_y = 0
 local function paint_indicators()
 	if not g.indicator:GetValue() then return end
 
-	local cx = screen_x * 0.5 + g.ind_x:GetValue()
-	local cy = screen_y * 0.5 + g.ind_y:GetValue()
+	local cx = screen_x * 0.5 + ind_drag_x
+	local cy = screen_y * 0.5 + ind_drag_y
 
 	local me = entities.GetLocalPlayer()
 	local alive = false
@@ -3591,12 +3565,6 @@ local function paint_indicators()
 	-- smooth alpha (only for overall fade, not DT)
 	ind_alpha = ind_lerp(ind_alpha, alive and 1 or 0, 0.04)
 
-	-- Dynamic font size from slider
-	local cur_h = g.ind_height:GetValue()
-	if cur_h ~= ind_last_height then
-		ind_last_height = cur_h
-		ind_font = draw.CreateFont("Verdana", cur_h, 800)
-	end
 	draw.SetFont(ind_font)
 
 	local px, py = cx, cy
@@ -3627,7 +3595,7 @@ local function paint_indicators()
 		end
 	end
 
-	local box_w = g.ind_width:GetValue()
+	local box_w = 140
 	local box_x1 = px - box_w * 0.5
 	local box_y1 = start_py
 	local box_x2 = px + box_w * 0.5
@@ -3638,15 +3606,12 @@ local function paint_indicators()
 
 	if ind_dragging then
 		if lmb then
-			local new_x = mx - ind_drag_off_x - screen_x * 0.5
-			local new_y = my - ind_drag_off_y - screen_y * 0.5
+			ind_drag_x = mx - ind_drag_off_x
+			ind_drag_y = my - ind_drag_off_y
 
 			-- snap to center (8px threshold like metasoon)
-			if math.abs(new_x) < 8 then new_x = 0 end
-			if math.abs(new_y) < 8 then new_y = 0 end
-
-			g.ind_x:SetValue(new_x)
-			g.ind_y:SetValue(new_y)
+			if math.abs(ind_drag_x) < 8 then ind_drag_x = 0 end
+			if math.abs(ind_drag_y) < 8 then ind_drag_y = 0 end
 
 			-- ── metasoon grid while dragging ──
 			local igcx = math.floor(screen_x * 0.5)
@@ -3669,8 +3634,8 @@ local function paint_indicators()
 		if lmb then
 			if mx >= box_x1 and mx <= box_x2 and my >= box_y1 and my <= box_y2 then
 				ind_dragging = true
-				ind_drag_off_x = mx - g.ind_x:GetValue() - screen_x * 0.5
-				ind_drag_off_y = my - g.ind_y:GetValue() - screen_y * 0.5
+				ind_drag_off_x = mx - ind_drag_x
+				ind_drag_off_y = my - ind_drag_y
 			end
 		end
 	end
