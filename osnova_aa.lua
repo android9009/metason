@@ -445,12 +445,12 @@ g.builder_mode = gui.Combobox(TAB, "aa_builder_mode", "AA Builder", "Builder", "
 g.defensive_enable = gui.Checkbox(TAB, "aa_defensive_enable", "Enable Defensive Builder", false)
 g.roundend_enable = gui.Checkbox(TAB, "aa_roundend_enable", "Enable Round End AA", false)
 
--- Scripts Groupbox position/size sliders (inside the Groupbox itself)
+-- Scripts Groupbox position/size editboxes (inside the Groupbox itself)
 if scriptsgb then
-g.scripts_x = gui.Slider(scriptsgb, "scripts_gb_x", "Position X", 16, 0, 800, 1)
-g.scripts_y = gui.Slider(scriptsgb, "scripts_gb_y", "Position Y", 16, 0, 600, 1)
-g.scripts_w = gui.Slider(scriptsgb, "scripts_gb_w", "Width", 287, 100, 600, 1)
-g.scripts_h = gui.Slider(scriptsgb, "scripts_gb_h", "Height", 200, 50, 500, 1)
+g.scripts_x = gui.Editbox(scriptsgb, "scripts_gb_x", "16")
+g.scripts_y = gui.Editbox(scriptsgb, "scripts_gb_y", "16")
+g.scripts_w = gui.Editbox(scriptsgb, "scripts_gb_w", "287")
+g.scripts_h = gui.Editbox(scriptsgb, "scripts_gb_h", "200")
 end
 
 -- Round End AA Yaw
@@ -3706,12 +3706,16 @@ end
 -- on_draw — main draw callback (refactored to fix >200 locals)
 -- ============================================================
 function on_draw()
-	-- Update Scripts Groupbox position/size from sliders
+	-- Update Scripts Groupbox position/size from editboxes
 	if scriptsgb and g.scripts_x then
-		scriptsgb:SetPosX(g.scripts_x:GetValue())
-		scriptsgb:SetPosY(g.scripts_y:GetValue())
-		scriptsgb:SetWidth(g.scripts_w:GetValue())
-		scriptsgb:SetHeight(g.scripts_h:GetValue())
+		local x = tonumber(g.scripts_x:GetValue())
+		local y = tonumber(g.scripts_y:GetValue())
+		local w = tonumber(g.scripts_w:GetValue())
+		local h = tonumber(g.scripts_h:GetValue())
+		if x then scriptsgb:SetPosX(x) end
+		if y then scriptsgb:SetPosY(y) end
+		if w then scriptsgb:SetWidth(w) end
+		if h then scriptsgb:SetHeight(h) end
 	end
 
 	-- viewmodel easing
