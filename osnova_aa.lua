@@ -796,11 +796,8 @@ end
 
 -- Anti-kick / reconnect bypass firewall toggle
 g.anti_kick = gui.Checkbox(MISCTAB, "misc_anti_kick", "Anti-kick", false)
-
--- Blockbot
-local MISC_GB = gui.Groupbox(MISCTAB, "Blockbot", 16, 350, 296, 0)
-g.blockbot_enable = gui.Checkbox(MISC_GB, "aa_blockbot_enable", "Enable Blockbot", false)
-g.blockbot_key = gui.Keybox(MISC_GB, "aa_blockbot_key", "Blockbot Key", 0)
+g.blockbot_enable = gui.Checkbox(MISCTAB, "aa_blockbot_enable", "Blockbot", false)
+g.blockbot_key = gui.Keybox(MISCTAB, "aa_blockbot_key", "Blockbot Key", 0)
 
 
 AK = AK or {
@@ -3819,6 +3816,9 @@ function on_draw()
 	g.buybot_primary:SetInvisible(not bb_on)
 	g.buybot_secondary:SetInvisible(not bb_on)
 	g.buybot_utils:SetInvisible(not bb_on)
+
+	-- Blockbot visibility
+	g.blockbot_key:SetInvisible(not g.blockbot_enable:GetValue())
 
 	-- Builder + scope + VAC-NET visibility
 	handle_builder_vis()
