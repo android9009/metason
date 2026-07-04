@@ -7,35 +7,6 @@ _G.__AA = _G.__AA or {}
 -- Plus pitch, manual directions, conditions, on-screen indicator.
 -- Sets view angles in PreMove (matches the working Aimware example).
 
--- ============================================================
--- Централизованная база байтовых паттернов (osnova_signatures.lua).
--- Оффсеты netvar-полей (dwEntityList, dwLocalPlayerController и т.д.)
--- по-прежнему приходят из AWCHANGER_API.offsets (считает их osnova_skin.lua
--- через ту же централизованную базу) - тут ничего менять не нужно.
--- Этот блок нужен только для паттернов, которые ищутся напрямую в этом
--- файле (сейчас - VM_SIG для viewmodel offset хука). Если файл недоступен -
--- всё падает на прежние hardcoded паттерны, чит не ломается.
--- ============================================================
-local AA_SIG = nil
-pcall(function()
-	local src = http.Get("https://raw.githubusercontent.com/android9009/metason/main/osnova_signatures.lua")
-	if type(src) == "string" and #src > 500 then
-		local chunk = loadstring(src, "=osnova_signatures")
-		if chunk then
-			local ok, mod = pcall(chunk)
-			if ok and type(mod) == "table" then AA_SIG = mod end
-		end
-	end
-end)
-
-local function aa_sig_pattern(name, fallback)
-	if AA_SIG then
-		local e = AA_SIG.get(name)
-		if e and e.pattern then return e.pattern end
-	end
-	return fallback
-end
-
 local TAB  = gui.Reference("Ragebot", "Anti-Aim")
 -- manual directions / conditions / indicator live in the Auto Peek tab
 local TAB2 = gui.Reference("Ragebot", "Auto Peek")
@@ -129,11 +100,7 @@ MANUAL = {
 local VM = {}
 do
 	local ffi = rawget(_G, "ffi")
-	-- Не найден точно такой же паттерн в централизованной базе (CalcViewmodel/
-	-- CalcViewmodelView - другие функции с другими паттернами), поэтому тут
-	-- просто hardcoded паттерн как раньше. aa_sig_pattern оставлен на будущее,
-	-- если этот паттерн когда-нибудь появится в базе под своим именем.
-	local VM_SIG = aa_sig_pattern("ViewmodelOffsetHook", "E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? 84 C0 74 11 F3 0F 10 45 B0")
+	local VM_SIG = "E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? 84 C0 74 11 F3 0F 10 45 B0"
 	local page, match, origRel, ok = nil, nil, nil, false
 
 	local function r_i32(a) return ffi.cast("int32_t*", a)[0] end
@@ -630,6 +597,37 @@ function logs_enabled()
 	return g.logs_hit:GetValue() or g.logs_kill:GetValue() or g.logs_hurt:GetValue() or g.logs_miss:GetValue() or g.logs_fire:GetValue() or g.logs_vote:GetValue()
 end
 
+VOTE_ISSUES = VOTE_ISSUES or {
+	["#SFUI_vote_kick_player_body"] = "Kick player",
+	["#SFUI_vote_kick_player"] = "Kick player",
+	["#SFUI_vote_scramble_teams"] = "Scramble teams",
+	["#SFUI_vote_swap_teams"] = "Swap teams",
+	["#SFUI_vote_surrender"] = "Surrender",
+	["#SFUI_vote_restart_game"] = "Restart game",
+	["#SFUI_vote_timeout"] = "Call timeout",
+}
+
+function vote_clean_issue(issue)
+	issue = tostring(issue or "")
+	if VOTE_ISSUES[issue] then return VOTE_ISSUES[issue] end
+	local clean = issue:gsub("^#SFUI_vote_", ""):gsub("_body$", ""):gsub("_", " ")
+	clean = clean:gsub("^%l", string.upper)
+	if clean == "" then clean = "Vote" end
+	return clean
+end
+
+function vote_event_int(ev, key)
+	local v = nil
+	pcall(function() v = ev:GetInt(key) end)
+	return tonumber(v) or 0
+end
+
+function vote_event_string(ev, key)
+	local v = ""
+	pcall(function() v = ev:GetString(key) end)
+	return tostring(v or "")
+end
+
 -- ============================================================
 -- FFI-резолв имён игроков (прямое чтение из памяти, как в femboytap)
 -- Используется для голосований и логов
@@ -704,6 +702,40 @@ do
 		return nil
 	end
 
+	-- Для vote_started: initiator приходит как entityid (userid)
+	-- Для vote_cast: voter приходит как userid
+	-- В обоих случаях читаем через тот же механизм
+	function vote_name_resolve(ev, field)
+		local uid = 0
+		pcall(function() uid = ev:GetInt(field) end)
+		if uid <= 0 then return nil end
+		return vote_name_by_userid(uid)
+	end
+
+	-- Для disp_str: парсим :123: как UserID цели
+	function vote_target_from_disp(ev)
+		local disp
+		pcall(function() disp = ev:GetString("disp_str") end)
+		if not disp or disp == "" then return nil end
+		local tid = tonumber(disp:match(":(%d+):"))
+		if tid and tid > 0 then
+			return vote_name_by_userid(tid)
+		end
+		return nil
+	end
+end
+
+-- Упрощённая функция, которой пользуются vote_on_event и vote_log
+function vote_player_name(ev, ...)
+	local keys = {...}
+	for i = 1, #keys do
+		local name
+		pcall(function()
+			name = vote_name_resolve(ev, keys[i])
+		end)
+		if name then return name end
+	end
+	return "Unknown"
 end
 
 function vote_log(text)
@@ -715,91 +747,225 @@ function vote_log(text)
 	end
 end
 
--- Vote Reveal state (только для лога, без авто-действий)
+-- Vote Bypass state
+-- Наш UserID (запоминаем при первом выстреле/спавне)
+MY_USERID = nil
+
 VB = VB or {
+	active = false,
+	is_kick_against_us = false,
+	target = "",
+	teammates = 0,
+	needed = 2,
 	yes = 0,
 	no = 0,
 	voters = {},
+	action_taken = false,
+	vote_queued = false,
+	vote_queued_tick = 0,
 }
 
+-- Таблица дисконнекта по твоей логике:
+-- total = вся команда (включая тебя)
+-- disco_at = при скольких голосах "ЗА" дизконнектиться (-1 = никогда)
+-- needed = сколько нужно "ЗА" чтобы кик прошёл
+local VB_DISCO = {
+	[1] = { disco = -1, needed = 0 },  -- только я
+	[2] = { disco = -1, needed = 0 },  -- я + 1 тиммейт
+	[3] = { disco = 0,  needed = 2 },  -- я + 2 тиммейта → сразу дизконнект
+	[4] = { disco = 2,  needed = 3 },  -- при 2 голосах
+	[5] = { disco = 3,  needed = 3 },  -- при 3 голосах
+	[6] = { disco = 4,  needed = 4 },  -- при 4 голосах
+	[7] = { disco = 4,  needed = 4 },  -- при 4 голосах
+	[8] = { disco = 5,  needed = 5 },  -- при 5 голосах
+}
+
+local function vb_total_in_team()
+	-- сколько всего человек в команде (включая нас)
+	return VB.teammates + 1
+end
+
+local function vb_disco_at()
+	local total = vb_total_in_team()
+	local cfg = VB_DISCO[total]
+	if cfg then return cfg.disco, cfg.needed end
+	-- fallback на всякий случай
+	local needed = math.floor((total) / 2) + 1
+	return needed - 1, needed
+end
+
+local function vb_count_teammates()
+	local lp = entities.GetLocalPlayer()
+	if not lp then return 0 end
+	local my_team = lp:GetTeamNumber()
+	local count = 0
+	local players = entities.FindByClass("CCSPlayer")
+	for i = 1, #players do
+		local p = players[i]
+		if p ~= lp and p:GetTeamNumber() == my_team then count = count + 1 end
+	end
+	return count
+end
+
 local function vb_reset()
+	VB.active = false
+	VB.is_kick_against_us = false
+	VB.target = ""
 	VB.yes = 0
 	VB.no = 0
 	VB.voters = {}
+	VB.action_taken = false
+	VB.vote_queued = false
+	VB.vote_queued_tick = 0
+	VB.disco_at = -1
+	VB.needed = 0
 end
 
--- ============================================================
--- ВАЖНО: поля событий строго по официальной схеме CS2 (core.gameevents):
---   vote_started { issue:string, param1:string, votedata:string, team:byte, initiator:long }
---   vote_cast    { vote_option:int, userid:... }  (структура как в femboytap)
--- Раньше здесь param1 читался через GetInt (а это STRING в схеме) - несовпадение
--- типа поля protobuf-события на уровне API чита может крашить нативно (мимо
--- pcall), это и было вероятной причиной краша при старте голосования.
--- Переписано строго по рабочему образцу из femboytap.txt: entityid/disp_str,
--- никакого param1-as-int, никакой обработки vote_passed/vote_failed (в CS2
--- эти ивенты либо не приходят по FireGameEvent, либо их поля недокументированы
--- и небезопасны для угадывания - лучше не трогать вовсе).
--- ============================================================
+local function vb_take_action()
+	if VB.action_taken then return end
+	VB.action_taken = true
+	local mode = 0
+	if g.vb_mode then mode = g.vb_mode:GetValue() end
+	if mode == 0 then
+		client.Command("disconnect", true)
+	elseif mode == 1 then
+		if rawget(_G, "AK") and AK.sync then
+			AK.sync(true)
+		else
+			client.Command("disconnect", true)
+		end
+	else
+		client.Command("vote 2", true)
+	end
+end
+
+-- Отложенный голос "НЕТ" (через 8 тиков после старта голосования)
+local function vb_queue_vote()
+	VB.vote_queued = true
+	VB.vote_queued_tick = globals.TickCount() + 8
+end
+
+local function vb_process_queue()
+	if not VB.vote_queued then return end
+	if globals.TickCount() < VB.vote_queued_tick then return end
+	VB.vote_queued = false
+	client.Command("vote 2", true)
+end
+
 function vote_on_event(ev)
 	local name = nil
 	pcall(function() name = ev:GetName() end)
 
-	if name == "vote_started" or name == "vote_begin" then
+	-- Vote Bypass logic (работает всегда)
+	if name == "vote_started" then
 		vb_reset()
+		VB.active = true
+		-- param1 — это UserID цели (int), не имя!
+		local target_userid = vote_event_int(ev, "param1")
+		local issue = vote_event_string(ev, "issue")
+		VB.target = tostring(target_userid)
+		VB.teammates = vb_count_teammates()
+		VB.disco_at, VB.needed = vb_disco_at()
+		-- VB.needed = сколько нужно голосов "ЗА" для кика
+		-- VB.disco_at = при скольких голосах "ЗА" дизконнектиться
 
-		local initiator = 0
-		pcall(function() initiator = ev:GetInt("entityid") end)
-		if not initiator or initiator <= 0 then
-			pcall(function() initiator = ev:GetInt("userid") end)
+		local is_kick = issue:lower():find("kick") ~= nil
+		VB.is_kick_against_us = false
+		if is_kick and target_userid > 0 and MY_USERID then
+			-- Сравниваем UserID цели с НАШИМ UserID
+			VB.is_kick_against_us = (target_userid == MY_USERID)
+			if VB.is_kick_against_us then
+				-- Отложенный голос "НЕТ" (через ~8 тиков, чтобы сервер успел принять)
+				vb_queue_vote()
+			end
 		end
 
-		local tid = nil
-		pcall(function()
-			local disp = ev:GetString("disp_str")
-			if type(disp) == "string" then
-				local m = disp:match(":(%d+):")
-				if m then tid = tonumber(m) end
-			end
-		end)
-
+		-- Лог
 		if g.logs_vote and g.logs_vote:GetValue() then
-			local who = vote_name_by_userid(initiator) or "player"
-			local target = tid and (vote_name_by_userid(tid) or "player") or "player"
-			vote_log(who .. " started a vote to kick " .. target)
+			local who = vote_player_name(ev, "entityid", "initiator", "userid")
+			local clean_issue = vote_clean_issue(issue)
+			local against = VB.is_kick_against_us and " [AGAINST YOU! ← auto voting NO]" or ""
+			local target_name = vote_target_from_disp(ev) or (target_userid > 0 and vote_name_by_userid(target_userid)) or tostring(target_userid)
+			if target_name ~= "" and target_name ~= "0" then
+				vote_log(who .. " started: " .. clean_issue .. " (Target: " .. target_name .. ") | need " .. VB.needed .. " yes" .. against)
+			else
+				vote_log(who .. " started: " .. clean_issue .. " | need " .. VB.needed .. " yes" .. against)
+			end
 		end
 
 	elseif name == "vote_cast" then
-		local opt = nil
-		pcall(function() opt = ev:GetInt("vote_option") end)
-		if opt == nil or opt < 0 then return end
+		if VB.active then
+			-- ВАЖНО: как и в femboytap, vote_cast использует userid, а не entityid!
+			local who = vote_player_name(ev, "userid", "entityid")
+			-- vote_option может быть int или string
+			local opt = vote_event_int(ev, "vote_option")
+			if opt == 0 and vote_event_string(ev, "vote_option") ~= "0" then
+				-- если int не прочитался, пробуем string
+				local opt_str = vote_event_string(ev, "vote_option"):lower()
+				if opt_str == "yes" or opt_str == "1" then opt = 0
+				elseif opt_str == "no" or opt_str == "2" then opt = 1
+				else opt = 2 end
+			end
+			VB.voters[#VB.voters + 1] = {name = who, option = opt}
 
-		local voter = 0
-		pcall(function() voter = ev:GetInt("userid") end)
+			if opt == 0 then
+				VB.yes = VB.yes + 1
+				if g.logs_vote and g.logs_vote:GetValue() then
+					vote_log(who .. " voted YES (F1) [" .. VB.yes .. "/" .. VB.needed .. "]")
+				end
+			elseif opt == 1 then
+				VB.no = VB.no + 1
+				if g.logs_vote and g.logs_vote:GetValue() then
+					vote_log(who .. " voted NO (F2)")
+				end
+			else
+				if g.logs_vote and g.logs_vote:GetValue() then
+					vote_log(who .. " chose option " .. tostring(opt))
+				end
+			end
 
-		local yes = (opt == 0)
-		local who = vote_name_by_userid(voter) or "player"
-		VB.voters[#VB.voters + 1] = {name = who, option = opt}
-
-		if yes then
-			VB.yes = VB.yes + 1
-			if g.logs_vote and g.logs_vote:GetValue() then
-				vote_log(who .. " voted yes [" .. VB.yes .. "]")
+			-- Bypass: по твоей таблице
+			local yes_now = VB.yes    -- сколько уже голосов "ЗА"
+			local disco = VB.disco_at -- при скольких дизконнектиться
+			if VB.is_kick_against_us and not VB.action_taken and disco >= 0 and yes_now >= disco then
+				if g.logs_vote and g.logs_vote:GetValue() then
+					if disco == 0 then
+						vote_log("Kick started against you — disconnecting immediately!")
+					else
+						vote_log("Kick at " .. VB.needed .. " votes — disconnecting at " .. yes_now .. "/" .. VB.needed)
+					end
+				end
+				vb_take_action()
 			end
 		else
-			VB.no = VB.no + 1
+			-- Неактивно — просто логируем
 			if g.logs_vote and g.logs_vote:GetValue() then
-				vote_log(who .. " voted no")
+				local who = vote_player_name(ev, "userid", "entityid")
+				local opt = vote_event_int(ev, "vote_option")
+				if opt == 0 then vote_log(who .. " voted YES (F1)")
+				elseif opt == 1 then vote_log(who .. " voted NO (F2)")
+				else vote_log(who .. " chose option " .. tostring(opt)) end
 			end
 		end
+
+	elseif name == "vote_passed" then
+		if g.logs_vote and g.logs_vote:GetValue() then
+			vote_log("Vote ended: PASSED [" .. VB.yes .. " yes / " .. VB.no .. " no]")
+		end
+		if VB.is_kick_against_us and not VB.action_taken then vb_take_action() end
+		vb_reset()
+
+	elseif name == "vote_failed" then
+		if g.logs_vote and g.logs_vote:GetValue() then
+			vote_log("Vote ended: FAILED [" .. VB.yes .. " yes / " .. VB.no .. " no]")
+		end
+		vb_reset()
 	end
 end
 
 -- Anti-kick / reconnect bypass firewall toggle
 g.anti_kick = gui.Checkbox(MISCTAB, "misc_anti_kick", "Anti-kick", false)
-
--- Blockbot
-g.blockbot_enable = gui.Checkbox(MISCTAB, "aa_blockbot_enable", "Blockbot", false)
-
+g.vb_mode     = gui.Combobox(MISCTAB, "vb_mode", "VB Action", "Auto Leave", "Anti-Kick (AK)", "Vote No Only")
 
 AK = AK or {
     enabled = false,
@@ -2679,196 +2845,8 @@ local function as_pause(ticks)
     as_restore_user_keys(ticks or AIR_STOP_RESTORE_TICKS)
 end
 
-local blockbot_target = nil
-local function get_velocity(e)
-    local v = nil
-    pcall(function() v = e:GetPropVector("m_vecVelocity") end)
-    return v or Vector3(0,0,0)
-end
-
-local function handle_blockbot(cmd)
-    if not g.blockbot_enable or not g.blockbot_enable:GetValue() then 
-        blockbot_target = nil
-        return 
-    end
-    local key = g.blockbot_key:GetValue()
-    if key == 0 or not input.IsButtonDown(key) then 
-        blockbot_target = nil
-        return 
-    end
-
-    local lp = entities.GetLocalPlayer()
-    if not lp or not lp:IsAlive() then return end
-    
-    local my_pos = origin_of(lp)
-    if not my_pos then return end
-
-    if not blockbot_target or not blockbot_target:IsAlive() then
-        local best_dist = 250
-        blockbot_target = nil
-        if esp_targets then
-            for i = 1, #esp_targets do
-                local p = esp_targets[i]
-                if p:GetIndex() ~= lp:GetIndex() and is_live_player(p) then
-                    local pos = origin_of(p)
-                    if pos then
-                        local dx, dy = pos.x - my_pos.x, pos.y - my_pos.y
-                        local dist = math.sqrt(dx*dx + dy*dy)
-                        if dist < best_dist then
-                            best_dist = dist
-                            blockbot_target = p
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    if not blockbot_target then return end
-
-    local target_pos = origin_of(blockbot_target)
-    if not target_pos then return end
-
-    local target_vel = get_velocity(blockbot_target)
-    local target_speed = math.sqrt(target_vel.x*target_vel.x + target_vel.y*target_vel.y)
-    
-    local is_on_head = false
-    local height_diff = my_pos.z - target_pos.z
-    if height_diff > 50 and height_diff < 100 then
-        is_on_head = true
-    end
-
-    local move_pos_x, move_pos_y = target_pos.x, target_pos.y
-    
-    if is_on_head then
-        if target_speed > 10 then
-            move_pos_x = my_pos.x + target_vel.x * (globals.TickInterval() * 2)
-            move_pos_y = my_pos.y + target_vel.y * (globals.TickInterval() * 2)
-        end
-    else
-        if target_speed > 20 then
-            local vx = target_vel.x / target_speed
-            local vy = target_vel.y / target_speed
-            move_pos_x = target_pos.x + vx * 35
-            move_pos_y = target_pos.y + vy * 35
-        end
-    end
-
-    local dx = move_pos_x - my_pos.x
-    local dy = move_pos_y - my_pos.y
-    local dist = math.sqrt(dx*dx + dy*dy)
-    
-    if dist > 1.5 then
-        local va = cmd:GetViewAngles()
-        local move_yaw = math.deg(math.atan2(dy, dx))
-        local forward = math.cos(math.rad(move_yaw - va.y))
-        local side = math.sin(math.rad(move_yaw - va.y))
-        
-        local speed = 450
-        cmd:SetForwardMove(forward * speed)
-        cmd:SetSideMove(side * speed)
-    else
-        cmd:SetForwardMove(0)
-        cmd:SetSideMove(0)
-    end
-end
-
-
-
-local blockbot_target = nil
-local function get_velocity(e)
-    local v = nil
-    pcall(function() v = e:GetPropVector("m_vecVelocity") end)
-    if not v then pcall(function() v = e:GetPropVector("m_vVelocity") end) end
-    if not v then pcall(function() v = e:GetAbsVelocity() end) end
-    return v or Vector3(0,0,0)
-end
-
-local function handle_blockbot(cmd)
-    if not g.blockbot_enable or not g.blockbot_enable:GetValue() then 
-        if blockbot_target then as_release(true) end
-        blockbot_target = nil
-        return 
-    end
-
-    local lp = entities.GetLocalPlayer()
-    if not lp or not lp:IsAlive() then 
-        as_release(true)
-        blockbot_target = nil
-        return 
-    end
-    
-    local my_pos = origin_of(lp)
-    if not my_pos then return end
-
-    if not blockbot_target or not blockbot_target:IsAlive() or (origin_of(blockbot_target) and (origin_of(blockbot_target) - my_pos):Length() > 400) then
-        local best_dist = 300
-        blockbot_target = nil
-        local players = entities.FindByClass("C_CSPlayerPawn")
-        if not players or #players == 0 then players = entities.FindByClass("CCSPlayer") end
-        if players then
-            for i = 1, #players do
-                local p = players[i]
-                if p:GetIndex() ~= lp:GetIndex() and is_live_player(p) then
-                    local pos = origin_of(p)
-                    if pos then
-                        local dx, dy = pos.x - my_pos.x, pos.y - my_pos.y
-                        local dist = math.sqrt(dx*dx + dy*dy)
-                        if dist < best_dist then
-                            best_dist = dist
-                            blockbot_target = p
-                        end
-                    end
-                end
-            end
-        end
-    end
-
-    if not blockbot_target then 
-        as_release(true)
-        return 
-    end
-
-    local target_pos = origin_of(blockbot_target)
-    if not target_pos then 
-        as_release(true)
-        return 
-    end
-
-    local target_vel = get_velocity(blockbot_target)
-    local target_speed = math.sqrt(target_vel.x*target_vel.x + target_vel.y*target_vel.y)
-    
-    local move_pos_x, move_pos_y = target_pos.x, target_pos.y
-    if target_speed > 15 then
-        local vx = target_vel.x / target_speed
-        local vy = target_vel.y / target_speed
-        move_pos_x = target_pos.x + vx * 25
-        move_pos_y = target_pos.y + vy * 25
-    end
-
-    local dx = move_pos_x - my_pos.x
-    local dy = move_pos_y - my_pos.y
-    local dist = math.sqrt(dx*dx + dy*dy)
-    
-    if dist > 1.2 then
-        local va = cmd:GetViewAngles()
-        local move_yaw = math.deg(math.atan2(dy, dx))
-        local forward = math.cos(math.rad(move_yaw - va.y))
-        local side = math.sin(math.rad(move_yaw - va.y))
-        
-        as_auto_off()
-        as_set_script_keys(forward > 0.45, forward < -0.45, side > 0.45, side < -0.45)
-        AS.active = true
-    else
-        as_release(true)
-    end
-end
-
 local function pre_move(cmd)
 	pre_va = cmd:GetViewAngles()
-	pcall(handle_blockbot, cmd)
-	
-
 
 	-- Read current active weapon Min Damage silently. No text/logs.
 	pcall(as_update_min_damage)
@@ -3897,6 +3875,7 @@ function on_draw()
 	draw_screen_logs()
 	rg_sync()
 	pcall(function() AK.sync(g.anti_kick:GetValue()) end)
+	pcall(vb_process_queue)
 
 	-- Buy Bot visibility
 	local bb_on = g.buybot_enable:GetValue()
@@ -3964,6 +3943,8 @@ function on_event(event)
 				duck_cd_until  = globals.TickCount() + DUCK_COOLDOWN_TICKS
 				anti_nix_last_shot_tick = globals.TickCount()
 				as_pause(AIR_STOP_SHOT_DELAY)
+				-- Запоминаем наш UserID для Vote Bypass
+				if uid > 0 then MY_USERID = uid end
 			end
 		end)
 		if not ok then
@@ -3985,6 +3966,13 @@ function on_event(event)
 			end
 		end
 	elseif name == "player_hurt" then
+		-- Резервно запоминаем UserID при получении/нанесении урона
+		pcall(function()
+			local attacker = event:GetInt("attacker")
+			if attacker > 0 and client.GetPlayerIndexByUserID(attacker) == client.GetLocalPlayerIndex() then
+				if not MY_USERID then MY_USERID = attacker end
+			end
+		end)
 		pcall(function()
 			local by_me = client.GetPlayerIndexByUserID(event:GetInt("attacker")) == client.GetLocalPlayerIndex()
 			if by_me and event:GetInt("health") <= 0 then
@@ -4046,8 +4034,9 @@ pcall(function() client.AllowListener("round_start") end)
 pcall(function() client.AllowListener("round_end") end)
 pcall(function() client.AllowListener("round_prestart") end)
 pcall(function() client.AllowListener("vote_started") end)
-pcall(function() client.AllowListener("vote_begin") end)
 pcall(function() client.AllowListener("vote_cast") end)
+pcall(function() client.AllowListener("vote_passed") end)
+pcall(function() client.AllowListener("vote_failed") end)
 
 -- ============================================================
 -- callbacks
@@ -4090,8 +4079,8 @@ callbacks.Register("Unload", "osnova_aa_unload", function()
     _G.AK = nil
     _G.RG = nil
     _G.VM = nil
+    _G.MY_USERID = nil
     _G.VB = nil
 
     print("[osnova] AA Builder unloaded and cleaned")
 end)
-
