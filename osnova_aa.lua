@@ -1700,60 +1700,6 @@ pcall(function()
     end
 end)
 
--- ============================================================
--- Auto Revolver: when holding R8 Revolver (def 64),
--- automatically cycles LMB via cmd:SetButtons in CreateMove
--- ============================================================
-local ar_cm_active = false
-
-local function ar_createmove(cmd)
-    local lp = entities.GetLocalPlayer()
-    if not lp then return end
-    
-    local alive = false
-    pcall(function() alive = lp:IsAlive() end)
-    if not alive then return end
-    
-    -- Check if holding revolver (def 64)
-    local def = nil
-    pcall(function()
-        local api = rawget(_G, "AWCHANGER_API")
-        if api and api.activeDef then def = api.activeDef() end
-    end)
-    -- Fallback: try entity props
-    if not def then
-        pcall(function()
-            local wpn = lp:GetPropEntity("m_hActiveWeapon")
-            if wpn then def = wpn:GetPropInt("m_iItemDefinitionIndex") end
-        end)
-    end
-    if not def then
-        pcall(function()
-            local wpn = lp:GetProp("m_hActiveWeapon")
-            if wpn and type(wpn) == "userdata" then
-                def = wpn:GetFieldInt("m_iItemDefinitionIndex")
-            end
-        end)
-    end
-    
-    if def ~= 64 then return end
-    
-    -- Simple cycle: 26 ticks cock (hold), 17 ticks release (fire + gap) = 43 tick cycle
-    local tick = globals.TickCount()
-    local cycle = tick % 43
-    
-    local buttons = cmd:GetButtons()
-    if cycle < 26 then
-        -- Cocking: hold IN_ATTACK
-        cmd:SetButtons(bit.bor(buttons, IN_ATTACK))
-    else
-        -- Released: remove IN_ATTACK (fires on transition from held to released)
-        cmd:SetButtons(bit.band(buttons, bit.bnot(IN_ATTACK)))
-    end
-end
-
-callbacks.Register("CreateMove", "osnova_auto_revolver", ar_createmove)
-
 -- DT recharge tracking
 local dt_fire_time = 0       -- globals.CurTime() when last DT shot fired
 local dt_recharging = false  -- true while DT is on cooldown
@@ -3920,7 +3866,6 @@ callbacks.Register("Unload", "aa_air_stop_unload", function()
 	pcall(function() if AK and AK.enabled then AK.sync(false) end end)
 	as_auto_restore()
 	as_release(false)
-	pcall(function() client.Command("-attack", true) end)
 end)
 
 -- ============================================================
