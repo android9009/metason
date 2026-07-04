@@ -597,37 +597,6 @@ function logs_enabled()
 	return g.logs_hit:GetValue() or g.logs_kill:GetValue() or g.logs_hurt:GetValue() or g.logs_miss:GetValue() or g.logs_fire:GetValue() or g.logs_vote:GetValue()
 end
 
-VOTE_ISSUES = VOTE_ISSUES or {
-	["#SFUI_vote_kick_player_body"] = "Kick player",
-	["#SFUI_vote_kick_player"] = "Kick player",
-	["#SFUI_vote_scramble_teams"] = "Scramble teams",
-	["#SFUI_vote_swap_teams"] = "Swap teams",
-	["#SFUI_vote_surrender"] = "Surrender",
-	["#SFUI_vote_restart_game"] = "Restart game",
-	["#SFUI_vote_timeout"] = "Call timeout",
-}
-
-function vote_clean_issue(issue)
-	issue = tostring(issue or "")
-	if VOTE_ISSUES[issue] then return VOTE_ISSUES[issue] end
-	local clean = issue:gsub("^#SFUI_vote_", ""):gsub("_body$", ""):gsub("_", " ")
-	clean = clean:gsub("^%l", string.upper)
-	if clean == "" then clean = "Vote" end
-	return clean
-end
-
-function vote_event_int(ev, key)
-	local v = nil
-	pcall(function() v = ev:GetInt(key) end)
-	return tonumber(v) or 0
-end
-
-function vote_event_string(ev, key)
-	local v = ""
-	pcall(function() v = ev:GetString(key) end)
-	return tostring(v or "")
-end
-
 -- ============================================================
 -- FFI-резолв имён игроков (прямое чтение из памяти, как в femboytap)
 -- Используется для голосований и логов
@@ -702,40 +671,6 @@ do
 		return nil
 	end
 
-	-- Для vote_started: initiator приходит как entityid (userid)
-	-- Для vote_cast: voter приходит как userid
-	-- В обоих случаях читаем через тот же механизм
-	function vote_name_resolve(ev, field)
-		local uid = 0
-		pcall(function() uid = ev:GetInt(field) end)
-		if uid <= 0 then return nil end
-		return vote_name_by_userid(uid)
-	end
-
-	-- Для disp_str: парсим :123: как UserID цели
-	function vote_target_from_disp(ev)
-		local disp
-		pcall(function() disp = ev:GetString("disp_str") end)
-		if not disp or disp == "" then return nil end
-		local tid = tonumber(disp:match(":(%d+):"))
-		if tid and tid > 0 then
-			return vote_name_by_userid(tid)
-		end
-		return nil
-	end
-end
-
--- Упрощённая функция, которой пользуются vote_on_event и vote_log
-function vote_player_name(ev, ...)
-	local keys = {...}
-	for i = 1, #keys do
-		local name
-		pcall(function()
-			name = vote_name_resolve(ev, keys[i])
-		end)
-		if name then return name end
-	end
-	return "Unknown"
 end
 
 function vote_log(text)
@@ -760,67 +695,69 @@ local function vb_reset()
 	VB.voters = {}
 end
 
+-- ============================================================
+-- ВАЖНО: поля событий строго по официальной схеме CS2 (core.gameevents):
+--   vote_started { issue:string, param1:string, votedata:string, team:byte, initiator:long }
+--   vote_cast    { vote_option:int, userid:... }  (структура как в femboytap)
+-- Раньше здесь param1 читался через GetInt (а это STRING в схеме) - несовпадение
+-- типа поля protobuf-события на уровне API чита может крашить нативно (мимо
+-- pcall), это и было вероятной причиной краша при старте голосования.
+-- Переписано строго по рабочему образцу из femboytap.txt: entityid/disp_str,
+-- никакого param1-as-int, никакой обработки vote_passed/vote_failed (в CS2
+-- эти ивенты либо не приходят по FireGameEvent, либо их поля недокументированы
+-- и небезопасны для угадывания - лучше не трогать вовсе).
+-- ============================================================
 function vote_on_event(ev)
 	local name = nil
 	pcall(function() name = ev:GetName() end)
 
-	if name == "vote_started" then
+	if name == "vote_started" or name == "vote_begin" then
 		vb_reset()
-		local target_userid = vote_event_int(ev, "param1")
-		local issue = vote_event_string(ev, "issue")
 
-		-- Лог
-		if g.logs_vote and g.logs_vote:GetValue() then
-			local who = vote_player_name(ev, "entityid", "initiator", "userid")
-			local clean_issue = vote_clean_issue(issue)
-			local target_name = vote_target_from_disp(ev) or (target_userid > 0 and vote_name_by_userid(target_userid)) or tostring(target_userid)
-			if target_name ~= "" and target_name ~= "0" then
-				vote_log(who .. " started: " .. clean_issue .. " (Target: " .. target_name .. ")")
-			else
-				vote_log(who .. " started: " .. clean_issue)
+		local initiator = 0
+		pcall(function() initiator = ev:GetInt("entityid") end)
+		if not initiator or initiator <= 0 then
+			pcall(function() initiator = ev:GetInt("userid") end)
+		end
+
+		local tid = nil
+		pcall(function()
+			local disp = ev:GetString("disp_str")
+			if type(disp) == "string" then
+				local m = disp:match(":(%d+):")
+				if m then tid = tonumber(m) end
 			end
+		end)
+
+		if g.logs_vote and g.logs_vote:GetValue() then
+			local who = vote_name_by_userid(initiator) or "player"
+			local target = tid and (vote_name_by_userid(tid) or "player") or "player"
+			vote_log(who .. " started a vote to kick " .. target)
 		end
 
 	elseif name == "vote_cast" then
-		local who = vote_player_name(ev, "userid", "entityid")
-		-- vote_option может быть int или string
-		local opt = vote_event_int(ev, "vote_option")
-		if opt == 0 and vote_event_string(ev, "vote_option") ~= "0" then
-			-- если int не прочитался, пробуем string
-			local opt_str = vote_event_string(ev, "vote_option"):lower()
-			if opt_str == "yes" or opt_str == "1" then opt = 0
-			elseif opt_str == "no" or opt_str == "2" then opt = 1
-			else opt = 2 end
-		end
+		local opt = nil
+		pcall(function() opt = ev:GetInt("vote_option") end)
+		if opt == nil or opt < 0 then return end
+
+		local voter = 0
+		pcall(function() voter = ev:GetInt("userid") end)
+
+		local yes = (opt == 0)
+		local who = vote_name_by_userid(voter) or "player"
 		VB.voters[#VB.voters + 1] = {name = who, option = opt}
 
-		if opt == 0 then
+		if yes then
 			VB.yes = VB.yes + 1
 			if g.logs_vote and g.logs_vote:GetValue() then
-				vote_log(who .. " voted YES (F1) [" .. VB.yes .. "]")
-			end
-		elseif opt == 1 then
-			VB.no = VB.no + 1
-			if g.logs_vote and g.logs_vote:GetValue() then
-				vote_log(who .. " voted NO (F2)")
+				vote_log(who .. " voted yes [" .. VB.yes .. "]")
 			end
 		else
+			VB.no = VB.no + 1
 			if g.logs_vote and g.logs_vote:GetValue() then
-				vote_log(who .. " chose option " .. tostring(opt))
+				vote_log(who .. " voted no")
 			end
 		end
-
-	elseif name == "vote_passed" then
-		if g.logs_vote and g.logs_vote:GetValue() then
-			vote_log("Vote ended: PASSED [" .. VB.yes .. " yes / " .. VB.no .. " no]")
-		end
-		vb_reset()
-
-	elseif name == "vote_failed" then
-		if g.logs_vote and g.logs_vote:GetValue() then
-			vote_log("Vote ended: FAILED [" .. VB.yes .. " yes / " .. VB.no .. " no]")
-		end
-		vb_reset()
 	end
 end
 
@@ -3884,9 +3821,8 @@ pcall(function() client.AllowListener("round_start") end)
 pcall(function() client.AllowListener("round_end") end)
 pcall(function() client.AllowListener("round_prestart") end)
 pcall(function() client.AllowListener("vote_started") end)
+pcall(function() client.AllowListener("vote_begin") end)
 pcall(function() client.AllowListener("vote_cast") end)
-pcall(function() client.AllowListener("vote_passed") end)
-pcall(function() client.AllowListener("vote_failed") end)
 
 -- ============================================================
 -- callbacks
@@ -3933,4 +3869,3 @@ callbacks.Register("Unload", "osnova_aa_unload", function()
 
     print("[osnova] AA Builder unloaded and cleaned")
 end)
-
