@@ -797,7 +797,6 @@ end
 -- Anti-kick / reconnect bypass firewall toggle
 g.anti_kick = gui.Checkbox(MISCTAB, "misc_anti_kick", "Anti-kick", false)
 g.blockbot_enable = gui.Checkbox(MISCTAB, "aa_blockbot_enable", "Blockbot", false)
-g.blockbot_key = gui.Keybox(MISCTAB, "aa_blockbot_key", "Blockbot Key", 0)
 
 
 AK = AK or {
@@ -2694,13 +2693,6 @@ local function handle_blockbot(cmd)
         blockbot_target = nil
         return 
     end
-    
-    local key = g.blockbot_key:GetValue()
-    if key ~= 0 and not input.IsButtonDown(key) then 
-        if blockbot_target then as_release(true) end
-        blockbot_target = nil
-        return 
-    end
 
     local lp = entities.GetLocalPlayer()
     if not lp or not lp:IsAlive() then 
@@ -3840,9 +3832,6 @@ function on_draw()
 	g.buybot_secondary:SetInvisible(not bb_on)
 	g.buybot_utils:SetInvisible(not bb_on)
 
-	-- Blockbot visibility
-	g.blockbot_key:SetInvisible(not g.blockbot_enable:GetValue())
-
 	-- Builder + scope + VAC-NET visibility
 	handle_builder_vis()
 	handle_vacnet()
@@ -4033,3 +4022,4 @@ callbacks.Register("Unload", "osnova_aa_unload", function()
 
     print("[osnova] AA Builder unloaded and cleaned")
 end)
+
