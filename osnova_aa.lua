@@ -2681,7 +2681,10 @@ end
 local blockbot_target = nil
 local function get_velocity(e)
     local v = nil
+    -- Пробуем разные варианты получения скорости для CS2
     pcall(function() v = e:GetPropVector("m_vecVelocity") end)
+    if not v then pcall(function() v = e:GetPropVector("m_vVelocity") end) end
+    if not v then pcall(function() v = e:GetAbsVelocity() end) end
     return v or Vector3(0,0,0)
 end
 
@@ -2702,12 +2705,17 @@ local function handle_blockbot(cmd)
     local my_pos = origin_of(lp)
     if not my_pos then return end
 
-    if not blockbot_target or not blockbot_target:IsAlive() then
-        local best_dist = 250
+    -- Поиск цели (если текущая невалидна или далеко)
+    if not blockbot_target or not blockbot_target:IsAlive() or (origin_of(blockbot_target) and (origin_of(blockbot_target) - my_pos):Length() > 400) then
+        local best_dist = 300
         blockbot_target = nil
-        if esp_targets then
-            for i = 1, #esp_targets do
-                local p = esp_targets[i]
+        
+        local players = entities.FindByClass("C_CSPlayerPawn")
+        if not players or #players == 0 then players = entities.FindByClass("CCSPlayer") end
+        
+        if players then
+            for i = 1, #players do
+                local p = players[i]
                 if p:GetIndex() ~= lp:GetIndex() and is_live_player(p) then
                     local pos = origin_of(p)
                     if pos then
@@ -2733,23 +2741,25 @@ local function handle_blockbot(cmd)
     
     local is_on_head = false
     local height_diff = my_pos.z - target_pos.z
-    if height_diff > 50 and height_diff < 100 then
+    if height_diff > 45 and height_diff < 105 then
         is_on_head = true
     end
 
     local move_pos_x, move_pos_y = target_pos.x, target_pos.y
     
     if is_on_head then
-        if target_speed > 10 then
-            move_pos_x = my_pos.x + target_vel.x * (globals.TickInterval() * 2)
-            move_pos_y = my_pos.y + target_vel.y * (globals.TickInterval() * 2)
+        -- На голове: предикшн, чтобы не слететь
+        if target_speed > 5 then
+            move_pos_x = target_pos.x + target_vel.x * (globals.TickInterval() * 3)
+            move_pos_y = target_pos.y + target_vel.y * (globals.TickInterval() * 3)
         end
     else
-        if target_speed > 20 then
+        -- На земле: встаем ПЕРЕД челом
+        if target_speed > 15 then
             local vx = target_vel.x / target_speed
             local vy = target_vel.y / target_speed
-            move_pos_x = target_pos.x + vx * 35
-            move_pos_y = target_pos.y + vy * 35
+            move_pos_x = target_pos.x + vx * 25
+            move_pos_y = target_pos.y + vy * 25
         end
     end
 
@@ -2757,16 +2767,27 @@ local function handle_blockbot(cmd)
     local dy = move_pos_y - my_pos.y
     local dist = math.sqrt(dx*dx + dy*dy)
     
-    if dist > 1.5 then
+    if dist > 0.8 then
         local va = cmd:GetViewAngles()
         local move_yaw = math.deg(math.atan2(dy, dx))
         local forward = math.cos(math.rad(move_yaw - va.y))
         local side = math.sin(math.rad(move_yaw - va.y))
         
-        local speed = 450
-        cmd:SetForwardMove(forward * speed)
-        cmd:SetSideMove(side * speed)
+        local m_f = forward * 450
+        local m_s = side * 450
+        
+        cmd:SetForwardMove(m_f)
+        cmd:SetSideMove(m_s)
+        
+        -- Прожим кнопок для CS2 (обязательно)
+        local b = cmd:GetButtons()
+        if m_f > 50 then b = bit.bor(b, IN_FORWARD) end
+        if m_f < -50 then b = bit.bor(b, IN_BACK) end
+        if m_s > 50 then b = bit.bor(b, IN_LEFT) end
+        if m_s < -50 then b = bit.bor(b, IN_RIGHT) end
+        cmd:SetButtons(b)
     else
+        -- Если уже в нужной точке - стопаемся
         cmd:SetForwardMove(0)
         cmd:SetSideMove(0)
     end
