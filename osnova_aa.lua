@@ -791,6 +791,7 @@ end
 
 -- Anti-kick / reconnect bypass firewall toggle
 g.anti_kick = gui.Checkbox(MISCTAB, "misc_anti_kick", "Anti-kick", false)
+g.block_bot = gui.Checkbox(MISCTAB, "misc_block_bot", "Block Bot", false)
 
 AK = AK or {
     enabled = false,
@@ -2670,6 +2671,203 @@ local function as_pause(ticks)
     as_restore_user_keys(ticks or AIR_STOP_RESTORE_TICKS)
 end
 
+-- ============================================================
+-- Block Bot (Miscellaneous > Features)
+-- Automatically blocks the closest enemy by predicting their movement
+-- and standing in front of them. Uses Windows API (keybd_event) like Air Stop.
+-- ============================================================
+local BB = {
+    target = nil,
+    last_log = 0,
+}
+
+local BB_FFI = rawget(_G, "ffi")
+if BB_FFI then
+    pcall(function()
+        BB_FFI.cdef[[
+            void keybd_event(unsigned char bVk, unsigned char bScan, unsigned long dwFlags, unsigned long dwExtraInfo);
+            short GetAsyncKeyState(int vKey);
+        ]]
+    end)
+end
+
+local BB_VK_W, BB_VK_A, BB_VK_S, BB_VK_D = 0x57, 0x41, 0x53, 0x44
+local BB_KEYUP = 0x0002
+
+local function bb_key(vk, down)
+    if not BB_FFI then return end
+    pcall(function() BB_FFI.C.keybd_event(vk, 0, down and 0 or BB_KEYUP, 0) end)
+end
+
+local function bb_down(vk)
+    if not BB_FFI then return false end
+    local ok, v = pcall(function() return BB_FFI.C.GetAsyncKeyState(vk) end)
+    return ok and v and bit.band(v, 0x8000) ~= 0 or false
+end
+
+local BB_keys = { w = false, a = false, s = false, d = false }
+local BB_saved = { w = false, a = false, s = false, d = false }
+
+local function bb_save_user_keys()
+    BB_saved.w = bb_down(BB_VK_W) and not BB_keys.w
+    BB_saved.a = bb_down(BB_VK_A) and not BB_keys.a
+    BB_saved.s = bb_down(BB_VK_S) and not BB_keys.s
+    BB_saved.d = bb_down(BB_VK_D) and not BB_keys.d
+end
+
+local function bb_restore_user_keys()
+    if BB_saved.w then bb_key(BB_VK_W, true) end
+    if BB_saved.a then bb_key(BB_VK_A, true) end
+    if BB_saved.s then bb_key(BB_VK_S, true) end
+    if BB_saved.d then bb_key(BB_VK_D, true) end
+end
+
+local function bb_set_keys(w, a, s, d)
+    if w or a or s or d then
+        bb_save_user_keys()
+        bb_key(BB_VK_W, false); bb_key(BB_VK_A, false)
+        bb_key(BB_VK_S, false); bb_key(BB_VK_D, false)
+        BB_keys.w, BB_keys.a, BB_keys.s, BB_keys.d = false, false, false, false
+    end
+
+    if BB_keys.w and not w then bb_key(BB_VK_W, false); BB_keys.w = false end
+    if BB_keys.a and not a then bb_key(BB_VK_A, false); BB_keys.a = false end
+    if BB_keys.s and not s then bb_key(BB_VK_S, false); BB_keys.s = false end
+    if BB_keys.d and not d then bb_key(BB_VK_D, false); BB_keys.d = false end
+
+    if w then bb_key(BB_VK_W, true); BB_keys.w = true end
+    if a then bb_key(BB_VK_A, true); BB_keys.a = true end
+    if s then bb_key(BB_VK_S, true); BB_keys.s = true end
+    if d then bb_key(BB_VK_D, true); BB_keys.d = true end
+end
+
+local function bb_release()
+    bb_set_keys(false, false, false, false)
+    bb_restore_user_keys()
+end
+
+-- Find closest enemy on same height level
+local function bb_get_closest_enemy(lp)
+    local my = origin_of(lp)
+    if not my then return nil, 999999 end
+    
+    local myteam = field_int(lp, "m_iTeamNum")
+    local closest = nil
+    local closest_dist = 999999
+    
+    for i = 1, #esp_targets do
+        local e = esp_targets[i]
+        if e and e ~= lp and is_live_player(e) then
+            local team = field_int(e, "m_iTeamNum")
+            if not (myteam ~= 0 and team ~= 0 and team == myteam) then
+                local p = origin_of(e)
+                if p then
+                    local height_diff = math.abs(my.z - p.z)
+                    if height_diff < 100 then
+                        local dx = p.x - my.x
+                        local dy = p.y - my.y
+                        local dist_2d = math.sqrt(dx * dx + dy * dy)
+                        if dist_2d < closest_dist then
+                            closest_dist = dist_2d
+                            closest = e
+                        end
+                    end
+                end
+            end
+        end
+    end
+    
+    return closest, closest_dist
+end
+
+-- Get enemy velocity
+local function bb_get_velocity(ent)
+    local v
+    pcall(function() v = ent:GetPropVector("m_vecAbsVelocity") end)
+    if v and v.x then return v end
+    pcall(function() v = ent:GetPropVector("m_vecVelocity") end)
+    if v and v.x then return v end
+    return { x = 0, y = 0, z = 0 }
+end
+
+local function bb_block(cmd, lp)
+    if not g.block_bot:GetValue() then
+        bb_release()
+        BB.target = nil
+        return
+    end
+    
+    local flags = field_int(lp, "m_fFlags")
+    local on_ground = bit.band(flags, FL_ONGROUND) ~= 0
+    if not on_ground then
+        bb_release()
+        BB.target = nil
+        return
+    end
+    
+    -- Find or validate target
+    if not BB.target or not is_live_player(BB.target) then
+        local enemy, dist = bb_get_closest_enemy(lp)
+        if enemy and dist < 200 then
+            BB.target = enemy
+        else
+            bb_release()
+            BB.target = nil
+            return
+        end
+    end
+    
+    -- Calculate positions
+    local my = origin_of(lp)
+    local target_pos = origin_of(BB.target)
+    if not my or not target_pos then
+        bb_release()
+        return
+    end
+    
+    -- Predict target movement
+    local block_x, block_y = target_pos.x, target_pos.y
+    local vel = bb_get_velocity(BB.target)
+    local speed = math.sqrt(vel.x * vel.x + vel.y * vel.y)
+    
+    if speed > 15 then
+        local dir_x = vel.x / speed
+        local dir_y = vel.y / speed
+        block_x = block_x + dir_x * 60
+        block_y = block_y + dir_y * 60
+    end
+    
+    -- Calculate direction to block position
+    local dir_x = block_x - my.x
+    local dir_y = block_y - my.y
+    local dist_2d = math.sqrt(dir_x * dir_x + dir_y * dir_y)
+    
+    -- Check if already in position
+    if dist_2d < 35 then
+        bb_release()
+        return
+    end
+    
+    -- Get view angles
+    local va = cmd:GetViewAngles()
+    local view_yaw = va.y or 0
+    
+    -- Calculate movement direction relative to view
+    local wish_yaw = math.deg(math.atan2(dir_y, dir_x))
+    local diff_yaw = math.rad(wish_yaw - view_yaw)
+    
+    local forward = math.cos(diff_yaw)
+    local side = math.sin(diff_yaw)
+    
+    -- Determine which keys to press
+    local press_w = forward > 0.3
+    local press_s = forward < -0.3
+    local press_a = side > 0.3
+    local press_d = side < -0.3
+    
+    bb_set_keys(press_w, press_a, press_s, press_d)
+end
+
 local function pre_move(cmd)
 	pre_va = cmd:GetViewAngles()
 
@@ -2682,6 +2880,14 @@ local function pre_move(cmd)
 		local alive = false
 		if alp then pcall(function() alive = alp:IsAlive() end) end
 		if alive then as_air_stop(cmd, alp) else as_auto_restore(); as_release(false) end
+	end
+
+	-- Block Bot: independent of AA master, uses keybd_event like Air Stop
+	do
+		local bblp = entities.GetLocalPlayer()
+		local alive = false
+		if bblp then pcall(function() alive = bblp:IsAlive() end) end
+		if alive then bb_block(cmd, bblp) else bb_release() end
 	end
 
 	-- duck peek assist (bind held). stay crouched, and only stand to peek when
@@ -3864,6 +4070,7 @@ callbacks.Register("Unload", "aa_air_stop_unload", function()
 	pcall(function() if AK and AK.enabled then AK.sync(false) end end)
 	as_auto_restore()
 	as_release(false)
+	bb_release()
 end)
 
 -- ============================================================
