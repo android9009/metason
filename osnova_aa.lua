@@ -3705,6 +3705,9 @@ end
 -- ============================================================
 -- on_draw — main draw callback (refactored to fix >200 locals)
 -- ============================================================
+local gh_was_enabled = false
+local gh_base_url = "https://raw.githubusercontent.com/android9009/metason/main/"
+
 function on_draw()
 	-- Scripts: show/hide enable checkboxes based on listbox selection
 	if g.scripts_list and g.wb_enable then
@@ -3712,6 +3715,40 @@ function on_draw()
 		g.wb_enable:SetInvisible(sel ~= 0)
 		g.gr_enable:SetInvisible(sel ~= 1)
 		g.sync_enable:SetInvisible(sel ~= 2)
+	end
+
+	-- Grenade Helper: load/unload via checkbox
+	if g.gr_enable then
+		local gh_on = g.gr_enable:GetValue()
+		if gh_on and not gh_was_enabled then
+			gh_was_enabled = true
+			if not rawget(_G, "GH") then
+				pcall(function()
+					local src = http.Get(gh_base_url .. "osnova_gh.lua")
+					if type(src) == "string" and #src > 500 then
+						local chunk, err = loadstring(src, "=osnova_gh")
+						if chunk then
+							local ok, e = pcall(chunk)
+							if ok then
+								print("[osnova] Grenade Helper loaded via checkbox")
+							else
+								print("[osnova] GH run error: " .. tostring(e))
+							end
+						else
+							print("[osnova] GH compile: " .. tostring(err))
+						end
+					else
+						print("[osnova] GH download failed")
+					end
+				end)
+			end
+		elseif not gh_on and gh_was_enabled then
+			gh_was_enabled = false
+			local GH_mod = rawget(_G, "GH")
+			if GH_mod and GH_mod.uninstall then
+				pcall(GH_mod.uninstall)
+			end
+		end
 	end
 
 	-- viewmodel easing
