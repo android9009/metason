@@ -292,6 +292,39 @@ local function draw_world_point(x, y, z, label, r, g, b, alpha, scale)
     return sx, sy
 end
 
+local function draw_wallbang_tracer(loc, alpha, r, g, b)
+    if not (loc and loc.from_x and loc.from_y and loc.from_z and loc.to_x and loc.to_y and loc.to_z) then return end
+    if alpha <= 2 then return end
+
+    -- Draw the line in visible sampled pieces instead of requiring both endpoints
+    -- to be on screen. This prevents the tracer from disappearing when one marker
+    -- is offscreen / behind camera while part of the line is still visible.
+    local last_x, last_y = nil, nil
+    local samples = 24
+
+    for i = 0, samples do
+        local t = i / samples
+        local x = loc.from_x + (loc.to_x - loc.from_x) * t
+        local y = loc.from_y + (loc.to_y - loc.from_y) * t
+        local z = loc.from_z + (loc.to_z - loc.from_z) * t
+        local sx, sy = client.WorldToScreen(Vector3(x, y, z))
+
+        if sx and sy then
+            if last_x and last_y then
+                draw.Color(255, 255, 255, alpha * 0.32)
+                draw.Line(last_x, last_y, sx, sy)
+                draw.Color(r, g, b, alpha * 0.58)
+                draw.Line(last_x + 1, last_y + 1, sx + 1, sy + 1)
+            end
+            last_x, last_y = sx, sy
+        else
+            -- break the segment only for this invisible sample; next visible sample
+            -- starts a new segment instead of killing the whole tracer.
+            last_x, last_y = nil, nil
+        end
+    end
+end
+
 local function render_wallbang_world()
     if not (WB.loaded and _G.OSNOVA_WALLBANG_ENABLED) then return end
     local origin = get_local_origin()
@@ -315,14 +348,9 @@ local function render_wallbang_world()
                 local from_r, from_g, from_b = selected and 255 or 120, 255, selected and 255 or 120
                 local to_r, to_g, to_b = 255, selected and 235 or 170, 95
                 local name = loc.name or "Wallbang"
-                local fsx, fsy = draw_world_point(loc.from_x, loc.from_y, loc.from_z, "FROM: " .. name, from_r, from_g, from_b, alpha, scale)
-                local tsx, tsy = draw_world_point(loc.to_x, loc.to_y, loc.to_z, "TO: " .. name, to_r, to_g, to_b, alpha, scale)
-                if fsx and fsy and tsx and tsy then
-                    draw.Color(255, 255, 255, alpha * 0.35)
-                    draw.Line(fsx, fsy, tsx, tsy)
-                    draw.Color(to_r, to_g, to_b, alpha * 0.55)
-                    draw.Line(fsx + 1, fsy + 1, tsx + 1, tsy + 1)
-                end
+                draw_wallbang_tracer(loc, alpha, to_r, to_g, to_b)
+                draw_world_point(loc.from_x, loc.from_y, loc.from_z, "FROM: " .. name, from_r, from_g, from_b, alpha, scale)
+                draw_world_point(loc.to_x, loc.to_y, loc.to_z, "TO: " .. name, to_r, to_g, to_b, alpha, scale)
             end
         end
         ::continue_wb_loc::
