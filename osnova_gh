@@ -18,8 +18,8 @@ _G.GH_ICONS = _G.GH_ICONS or {
 }
 
 do
-    local BASE_URL = "https://raw.githubusercontent.com/Spencer-png/cs2-gun-icons/main/cs2%20weapons/"
-    local function make_rgba_white(rgba_string)
+    _G.GH_ICONS.BASE_URL = "https://raw.githubusercontent.com/Spencer-png/cs2-gun-icons/main/cs2%20weapons/"
+    _G.GH_ICONS.make_rgba_white = function(rgba_string)
         local new_rgba = {}
         for i = 1, #rgba_string, 4 do
             local a = string.byte(rgba_string, i + 3)
@@ -29,11 +29,11 @@ do
     end
 
     for id, file in pairs(_G.GH_ICONS.list) do
-        http.Get(BASE_URL .. file, function(data)
+        http.Get(_G.GH_ICONS.BASE_URL .. file, function(data)
             if data then
                 local rgba, width, height = common.DecodePNG(data)
                 if rgba then
-                    _G.GH_ICONS.queue[id] = { rgba = make_rgba_white(rgba), width = width, height = height }
+                    _G.GH_ICONS.queue[id] = { rgba = _G.GH_ICONS.make_rgba_white(rgba), width = width, height = height }
                 end
             end
         end)
@@ -51,11 +51,11 @@ local osnova_icons = {
     [43] = "weapon_flashbang.png",
     [47] = "weapon_decoy.png"
 }
-local BASE_URL = "https://raw.githubusercontent.com/Spencer-png/cs2-gun-icons/main/cs2%20weapons/"
+_G.GH_ICONS.BASE_URL = "https://raw.githubusercontent.com/Spencer-png/cs2-gun-icons/main/cs2%20weapons/"
 local textures_to_create = {}
 local cached_textures = {}
 
-local function make_rgba_white(rgba_string)
+_G.GH_ICONS.make_rgba_white = function(rgba_string)
     local new_rgba = {}
     for i = 1, #rgba_string, 4 do
         local a = string.byte(rgba_string, i + 3)
@@ -65,11 +65,11 @@ local function make_rgba_white(rgba_string)
 end
 
 for id, file in pairs(osnova_icons) do
-    http.Get(BASE_URL .. file, function(data)
+    http.Get(_G.GH_ICONS.BASE_URL .. file, function(data)
         if data then
             local rgba, width, height = common.DecodePNG(data)
             if rgba then
-                textures_to_create[id] = { rgba = make_rgba_white(rgba), width = width, height = height }
+                textures_to_create[id] = { rgba = _G.GH_ICONS.make_rgba_white(rgba), width = width, height = height }
             end
         end
     end)
