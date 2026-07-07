@@ -13,6 +13,7 @@ local ui = {
     current_map = "unknown",
     map_data = {},
     data_file = "osnova_gh_locations.txt",
+    config_file = "osnova_gh_config.txt",
 
     settings = {
         key = 0, mode = 1, active = false, toggled = false,
@@ -249,6 +250,47 @@ local function osnova_serialize_value(v, indent)
     table.insert(out, pad .. "}")
     return table.concat(out)
 end
+
+local function osnova_save_config()
+    local cfg = {
+        settings = {
+            key = ui.settings.key or 0,
+            mode = ui.settings.mode or 1,
+            save_key = ui.settings.save_key or 0,
+            auto_key = ui.settings.auto_key or 0,
+            delete_key = ui.settings.delete_key or 0,
+            smooth = ui.settings.smooth or 50,
+            reaction = ui.settings.reaction or 100,
+            fov = ui.settings.fov or 160,
+        }
+    }
+    pcall(function() file.Write(ui.config_file, "return " .. osnova_serialize_value(cfg)) end)
+end
+
+local function osnova_load_config()
+    local ok, data = pcall(function() return file.Read(ui.config_file) end)
+    if not ok or not data or data == "" then return end
+
+    local loader = loadstring or load
+    local ok_load, cfg = pcall(function()
+        local fn = loader(data)
+        return fn and fn()
+    end)
+
+    if ok_load and type(cfg) == "table" and type(cfg.settings) == "table" then
+        local st = cfg.settings
+        ui.settings.key = tonumber(st.key) or ui.settings.key or 0
+        ui.settings.mode = tonumber(st.mode) or ui.settings.mode or 1
+        ui.settings.save_key = tonumber(st.save_key) or ui.settings.save_key or 0
+        ui.settings.auto_key = tonumber(st.auto_key) or ui.settings.auto_key or 0
+        ui.settings.delete_key = tonumber(st.delete_key) or ui.settings.delete_key or 0
+        ui.settings.smooth = tonumber(st.smooth) or ui.settings.smooth or 50
+        ui.settings.reaction = tonumber(st.reaction) or ui.settings.reaction or 100
+        ui.settings.fov = tonumber(st.fov) or ui.settings.fov or 160
+    end
+end
+
+osnova_load_config()
 
 local function osnova_location_has_position(loc)
     return type(loc) == "table"
@@ -2465,6 +2507,7 @@ callbacks.Register("Draw", "osnova_gh_full", function()
                 elseif ui.bind_target == "delete_location" then
                     ui.settings.delete_key = key
                 end
+                osnova_save_config()
                 osnova_suppress_bound_key(key)
                 osnova_block_bind_movement()
                 ui.bind_click_block = true
@@ -2937,6 +2980,7 @@ callbacks.Register("Draw", "osnova_gh_full", function()
 
             if hov and input.IsButtonPressed(1) then
                 ui.settings.mode = i - 1
+                osnova_save_config()
                 ui.popup.open = false
                 ui._combo_blocked = true
             end
