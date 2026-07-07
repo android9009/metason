@@ -3707,7 +3707,7 @@ end
 -- ============================================================
 local gh_was_enabled = false
 local gh_base_url = "https://raw.githubusercontent.com/android9009/metason/main/"
-local gh_paths = { "osnova_gh.lua", "gh.lua", "lua/gh", "lua/gh.lua", "osnova_gh_movement_helper.lua" }
+local gh_paths = { "osnova_gh", "osnova_gh.lua", "gh.lua", "lua/gh", "lua/gh.lua", "osnova_gh_movement_helper.lua" }
 
 local function gh_unreg(a, b)
 	pcall(function() callbacks.Unregister(a, b) end)
