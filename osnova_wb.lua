@@ -148,6 +148,114 @@ local function current_point()
     return o.x, o.y, o.z + 64
 end
 
+local WB_RENDER_MAX_DISTANCE = 450
+local WB_RENDER_FADE_START = 350
+
+local function get_local_origin()
+    local lp = entities.GetLocalPlayer()
+    if not lp or not lp:IsAlive() then return nil end
+    return lp:GetAbsOrigin()
+end
+
+local function dist3(origin, x, y, z)
+    local dx = (x or 0) - origin.x
+    local dy = (y or 0) - origin.y
+    local dz = (z or 0) - origin.z
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+end
+
+local function wb_alpha_by_distance(dist)
+    if dist > WB_RENDER_MAX_DISTANCE then return 0 end
+    if dist <= WB_RENDER_FADE_START then return 255 end
+    local fade = 1 - ((dist - WB_RENDER_FADE_START) / (WB_RENDER_MAX_DISTANCE - WB_RENDER_FADE_START))
+    if fade < 0 then fade = 0 elseif fade > 1 then fade = 1 end
+    return 255 * fade
+end
+
+local function wb_scale_by_distance(dist)
+    if dist <= 250 then return 1 end
+    local t = math.min(1, (dist - 250) / (WB_RENDER_MAX_DISTANCE - 250))
+    return 1 - 0.45 * t
+end
+
+local function draw_world_label(sx, sy, text, r, g, b, alpha, scale)
+    scale = scale or 1
+    draw.SetFont(scale < 0.75 and f_bind or f_main)
+    local tw, th = draw.GetTextSize(text)
+    local pad_x = math.max(5, math.floor(8 * scale))
+    local pad_y = math.max(3, math.floor(4 * scale))
+    local x1 = sx + 10 * scale
+    local y1 = sy - (th + pad_y * 2) / 2
+    local x2 = x1 + tw + pad_x * 2 + 3
+    local y2 = y1 + th + pad_y * 2
+
+    draw.Color(0, 0, 0, alpha * 0.32)
+    draw.ShadowRect(x1, y1, x2, y2, 8)
+    draw.Color(12, 12, 12, alpha * 0.82)
+    draw.RoundedRectFill(x1, y1, x2, y2, 4, 4, 4, 4, 4)
+    draw.Color(r, g, b, alpha * 0.65)
+    draw.RoundedRect(x1, y1, x2, y2, 4, 4, 4, 4, 4)
+    draw.Color(r, g, b, alpha)
+    draw.RoundedRectFill(x1 + 2, y1 + 2, x1 + 5, y2 - 2, 2, 2, 0, 2, 0)
+    draw.Color(230, 230, 230, alpha)
+    draw.Text(x1 + pad_x + 3, y1 + pad_y, text)
+end
+
+local function draw_world_point(x, y, z, label, r, g, b, alpha, scale)
+    if not (x and y and z) then return nil, nil end
+    local sx, sy = client.WorldToScreen(Vector3(x, y, z))
+    if not sx or not sy or alpha <= 2 then return nil, nil end
+
+    scale = scale or 1
+    local radius = math.max(3, 5 * scale)
+    draw.Color(r, g, b, alpha * 0.12)
+    draw.OutlinedCircle(sx, sy, radius + 8 * scale)
+    draw.Color(r, g, b, alpha * 0.20)
+    draw.OutlinedCircle(sx, sy, radius + 4 * scale)
+    draw.Color(r, g, b, alpha * 0.90)
+    draw.FilledCircle(sx, sy, radius)
+    draw.Color(255, 255, 255, alpha * 0.70)
+    draw.FilledCircle(sx, sy, math.max(1.5, radius * 0.38))
+
+    draw_world_label(sx, sy, label, r, g, b, alpha, scale)
+    return sx, sy
+end
+
+local function render_wallbang_world()
+    if not (WB.loaded and _G.OSNOVA_WALLBANG_ENABLED) then return end
+    local origin = get_local_origin()
+    if not origin then return end
+
+    local map = get_map_name()
+    local locs = get_locs(map)
+    for _, loc in pairs(locs or {}) do
+        local best_dist = nil
+        if loc.from_x then best_dist = dist3(origin, loc.from_x, loc.from_y, loc.from_z) end
+        if loc.to_x then
+            local d2 = dist3(origin, loc.to_x, loc.to_y, loc.to_z)
+            best_dist = best_dist and math.min(best_dist, d2) or d2
+        end
+        if best_dist then
+            local alpha = wb_alpha_by_distance(best_dist)
+            if alpha > 2 then
+                local scale = wb_scale_by_distance(best_dist)
+                local selected = (loc == get_locs(WB.selected_map)[WB.selected_location])
+                local from_r, from_g, from_b = selected and 255 or 120, 255, selected and 255 or 120
+                local to_r, to_g, to_b = 255, selected and 235 or 170, 95
+                local name = loc.name or "Wallbang"
+                local fsx, fsy = draw_world_point(loc.from_x, loc.from_y, loc.from_z, "FROM: " .. name, from_r, from_g, from_b, alpha, scale)
+                local tsx, tsy = draw_world_point(loc.to_x, loc.to_y, loc.to_z, "TO: " .. name, to_r, to_g, to_b, alpha, scale)
+                if fsx and fsy and tsx and tsy then
+                    draw.Color(255, 255, 255, alpha * 0.35)
+                    draw.Line(fsx, fsy, tsx, tsy)
+                    draw.Color(to_r, to_g, to_b, alpha * 0.55)
+                    draw.Line(fsx + 1, fsy + 1, tsx + 1, tsy + 1)
+                end
+            end
+        end
+    end
+end
+
 local function new_location()
     WB.selected_map = normalize_map_name(WB.selected_map)
     if WB.selected_map == "unknown" and WB.current_map and WB.current_map ~= "unknown" then
@@ -345,12 +453,14 @@ function WB.uninstall()
     WB.loaded = false
     _G.OSNOVA_WALLBANG_ENABLED = false
     if _G.__OSNOVA then _G.__OSNOVA.wb_on = false end
+    pcall(function() callbacks.Unregister("Draw", "osnova_wb_world") end)
     pcall(function() callbacks.Unregister("Unload", "osnova_wb_unload") end)
     _G.WB = nil
 end
 
 load_db()
 
+callbacks.Register("Draw", "osnova_wb_world", render_wallbang_world)
 callbacks.Register("Unload", "osnova_wb_unload", function()
     if WB and WB.uninstall then pcall(WB.uninstall) end
 end)
