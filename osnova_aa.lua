@@ -3707,6 +3707,63 @@ end
 -- ============================================================
 local gh_was_enabled = false
 local gh_base_url = "https://raw.githubusercontent.com/android9009/metason/main/"
+local gh_paths = { "osnova_gh.lua", "gh.lua", "lua/gh", "lua/gh.lua", "osnova_gh_movement_helper.lua" }
+
+local function gh_unreg(a, b)
+	pcall(function() callbacks.Unregister(a, b) end)
+end
+
+local function gh_uninstall()
+	gh_unreg("Draw", "osnova_gh_draw")
+	gh_unreg("CreateMove", "osnova_gh_cm")
+	gh_unreg("Draw", "osnova_gh_full")
+	gh_unreg("Draw", "osnova_gh_record")
+	gh_unreg("Draw", "osnova_gh_autowalk")
+	gh_unreg("Draw", "osnova_gh_aim")
+	gh_unreg("Draw", "osnova_mh_playback")
+	gh_unreg("Draw", "osnova_gh_autothrow")
+	gh_unreg("Unload", "osnova_gh_record_unload")
+	gh_unreg("Unload", "osnova_gh_autowalk_unload")
+	gh_unreg("Unload", "osnova_mh_playback_unload")
+	gh_unreg("Unload", "osnova_gh_autothrow_unload")
+	_G.GH = nil
+end
+
+local function gh_download()
+	for i = 1, #gh_paths do
+		local path = gh_paths[i]
+		local src = nil
+		pcall(function() src = http.Get(gh_base_url .. path) end)
+		if type(src) == "string" and #src > 500 then
+			return src, path
+		end
+	end
+	return nil, nil
+end
+
+local function gh_load()
+	if rawget(_G, "GH") then return true end
+	local src, path = gh_download()
+	if type(src) ~= "string" then
+		print("[osnova] GH download failed")
+		return false
+	end
+	local chunk, err = loadstring(src, "=osnova_gh")
+	if not chunk then
+		print("[osnova] GH compile: " .. tostring(err))
+		return false
+	end
+	local ok, e = pcall(chunk)
+	if not ok then
+		print("[osnova] GH run error: " .. tostring(e))
+		return false
+	end
+	_G.GH = _G.GH or {}
+	_G.GH.uninstall = gh_uninstall
+	_G.GH.path = path
+	print("[osnova] Grenade Helper loaded via checkbox: " .. tostring(path))
+	return true
+end
 
 function on_draw()
 	-- Scripts: show/hide enable checkboxes based on listbox selection
@@ -3717,36 +3774,19 @@ function on_draw()
 		g.sync_enable:SetInvisible(sel ~= 2)
 	end
 
-	-- Grenade Helper: load/unload via checkbox
+	-- Grenade Helper: load/unload via checkbox in Scripts tab
 	if g.gr_enable then
 		local gh_on = g.gr_enable:GetValue()
 		if gh_on and not gh_was_enabled then
 			gh_was_enabled = true
-			if not rawget(_G, "GH") then
-				pcall(function()
-					local src = http.Get(gh_base_url .. "osnova_gh.lua")
-					if type(src) == "string" and #src > 500 then
-						local chunk, err = loadstring(src, "=osnova_gh")
-						if chunk then
-							local ok, e = pcall(chunk)
-							if ok then
-								print("[osnova] Grenade Helper loaded via checkbox")
-							else
-								print("[osnova] GH run error: " .. tostring(e))
-							end
-						else
-							print("[osnova] GH compile: " .. tostring(err))
-						end
-					else
-						print("[osnova] GH download failed")
-					end
-				end)
-			end
+			pcall(gh_load)
 		elseif not gh_on and gh_was_enabled then
 			gh_was_enabled = false
 			local GH_mod = rawget(_G, "GH")
 			if GH_mod and GH_mod.uninstall then
 				pcall(GH_mod.uninstall)
+			else
+				pcall(gh_uninstall)
 			end
 		end
 	end
