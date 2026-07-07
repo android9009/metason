@@ -2557,9 +2557,15 @@ callbacks.Register("Draw", "osnova_gh_full", function()
     draw.Text(ui.x + 82, ui.y + 13, "Grenade + Movement Helper")
 
     local tabs = {"MAIN", "LOCATION"}
-    if ui.tab > 2 then ui.tab = 1 end
+    local osnova_state = rawget(_G, "__OSNOVA")
+    local wallbang_enabled = (osnova_state and osnova_state.wb_on) or rawget(_G, "OSNOVA_WALLBANG_ENABLED")
+    if wallbang_enabled then
+        table.insert(tabs, "WALLBANG")
+    elseif ui.tab > 2 then
+        ui.tab = 1
+    end
 
-    local tab_w = 104
+    local tab_w = (#tabs >= 3) and 96 or 104
     local tab_gap = 10
     local tab_total_w = #tabs * tab_w + (#tabs - 1) * tab_gap
     local tab_start_x = ui.x + ui.w - 16 - tab_total_w
@@ -2929,6 +2935,25 @@ callbacks.Register("Draw", "osnova_gh_full", function()
                 ui.edit_mode = false
             end)
         end
+    end
+
+    if ui.tab == 3 then
+        -- Wallbang Helper placeholder tab. The tab appears when Wallbang Helper
+        -- is enabled in OSNOVA loader / osnova_aa Scripts section.
+        draw.Color(0, 0, 0, 70)
+        draw.ShadowRect(cx, cy, cx + cw, cy + ch, 12)
+        draw.Color(12, 12, 13, 245)
+        draw.RoundedRectFill(cx, cy, cx + cw, cy + ch, 6, 6, 6, 6, 6)
+        draw.Color(unpack(ui.clr.outline))
+        draw.RoundedRect(cx, cy, cx + cw, cy + ch, 6, 6, 6, 6, 6)
+
+        draw.SetFont(f_title)
+        draw.Color(255, 255, 255, 255)
+        draw.Text(cx + 18, cy + 18, "WALLBANG HELPER")
+
+        draw.SetFont(f_main)
+        draw.Color(150, 150, 150, 255)
+        draw.Text(cx + 18, cy + 44, "Tab connected. Logic will be added later.")
     end
 
     render_active_combo()
