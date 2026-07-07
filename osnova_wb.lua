@@ -3,6 +3,42 @@
 
 local unpack = unpack or table.unpack
 
+-- === ICON LOADER INJECTED ===
+local osnova_icons = {
+    ["all"] = "weapon_c4.png", -- fallback icon
+    ["scout"] = "weapon_ssg08.png",
+    ["pistol"] = "weapon_deagle.png",
+    ["rifle"] = "weapon_ak47.png",
+    ["awp"] = "weapon_awp.png",
+    ["auto"] = "weapon_scar20.png"
+}
+local BASE_URL = "https://raw.githubusercontent.com/Spencer-png/cs2-gun-icons/main/cs2%20weapons/"
+local textures_to_create = {}
+local cached_textures = {}
+
+local function make_rgba_white(rgba_string)
+    local new_rgba = {}
+    for i = 1, #rgba_string, 4 do
+        local a = string.byte(rgba_string, i + 3)
+        table.insert(new_rgba, string.char(255, 255, 255, a))
+    end
+    return table.concat(new_rgba)
+end
+
+for id, file in pairs(osnova_icons) do
+    http.Get(BASE_URL .. file, function(data)
+        if data then
+            local rgba, width, height = common.DecodePNG(data)
+            if rgba then
+                textures_to_create[id] = { rgba = make_rgba_white(rgba), width = width, height = height }
+            end
+        end
+    end)
+end
+-- ============================
+
+
+
 _G.WB = _G.WB or {}
 local WB = _G.WB
 WB.loaded = true
@@ -249,7 +285,7 @@ local function wb_scale_by_distance(dist)
     return 1 - 0.45 * t
 end
 
-local function draw_world_label(sx, sy, text, r, g, b, alpha, scale)
+local function draw_world_label(sx, sy, text, r, g, b, alpha, scale, icon_id)
     scale = scale or 1
     draw.SetFont(scale < 0.75 and f_bind or f_main)
     local tw, th = draw.GetTextSize(text)
@@ -257,8 +293,17 @@ local function draw_world_label(sx, sy, text, r, g, b, alpha, scale)
     local pad_y = math.max(3, math.floor(4 * scale))
     local x1 = sx + 10 * scale
     local y1 = sy - (th + pad_y * 2) / 2
-    local x2 = x1 + tw + pad_x * 2 + 3
-    local y2 = y1 + th + pad_y * 2
+    local tex_w, tex_h = 0, 0
+    local tex = nil
+    if icon_id and cached_textures[icon_id] then
+        tex = cached_textures[icon_id]
+        tex_w = math.floor(tex.width * scale * 0.7)
+        tex_h = math.floor(tex.height * scale * 0.7)
+        if tex_w > 0 then tex_w = tex_w + 5 end
+    end
+
+    local x2 = x1 + tw + pad_x * 2 + 3 + tex_w
+    local y2 = math.max(y1 + th + pad_y * 2, y1 + tex_h + pad_y * 2)
 
     draw.Color(0, 0, 0, alpha * 0.32)
     draw.ShadowRect(x1, y1, x2, y2, 8)
@@ -268,11 +313,22 @@ local function draw_world_label(sx, sy, text, r, g, b, alpha, scale)
     draw.RoundedRect(x1, y1, x2, y2, 4, 4, 4, 4, 4)
     draw.Color(r, g, b, alpha)
     draw.RoundedRectFill(x1 + 2, y1 + 2, x1 + 5, y2 - 2, 2, 2, 0, 2, 0)
+    
+    local text_x = x1 + pad_x + 3
+    if tex then
+        draw.Color(255, 255, 255, alpha)
+        draw.SetTexture(tex.texture)
+        local icon_y = y1 + (y2 - y1 - tex_h) / 2
+        draw.FilledRect(text_x, icon_y, text_x + tex_w - 5, icon_y + tex_h)
+        draw.SetTexture(nil)
+        text_x = text_x + tex_w
+    end
+    
     draw.Color(230, 230, 230, alpha)
-    draw.Text(x1 + pad_x + 3, y1 + pad_y, text)
+    draw.Text(text_x, y1 + (y2 - y1 - th) / 2, text)
 end
 
-local function draw_world_point(x, y, z, label, r, g, b, alpha, scale)
+local function draw_world_point(x, y, z, label, r, g, b, alpha, scale, icon_id)
     if not (x and y and z) then return nil, nil end
     local sx, sy = client.WorldToScreen(Vector3(x, y, z))
     if not sx or not sy or alpha <= 2 then return nil, nil end
@@ -288,7 +344,7 @@ local function draw_world_point(x, y, z, label, r, g, b, alpha, scale)
     draw.Color(255, 255, 255, alpha * 0.70)
     draw.FilledCircle(sx, sy, math.max(1.5, radius * 0.38))
 
-    draw_world_label(sx, sy, label, r, g, b, alpha, scale)
+    draw_world_label(sx, sy, label, r, g, b, alpha, scale, icon_id)
     return sx, sy
 end
 
@@ -349,8 +405,8 @@ local function render_wallbang_world()
                 local to_r, to_g, to_b = 255, selected and 235 or 170, 95
                 local name = loc.name or "Wallbang"
                 draw_wallbang_tracer(loc, alpha, to_r, to_g, to_b)
-                draw_world_point(loc.from_x, loc.from_y, loc.from_z, "FROM: " .. name, from_r, from_g, from_b, alpha, scale)
-                draw_world_point(loc.to_x, loc.to_y, loc.to_z, "TO: " .. name, to_r, to_g, to_b, alpha, scale)
+                draw_world_point(loc.from_x, loc.from_y, loc.from_z, "FROM: " .. name, from_r, from_g, from_b, alpha, scale, loc.weapon_filter)
+                draw_world_point(loc.to_x, loc.to_y, loc.to_z, "TO: " .. name, to_r, to_g, to_b, alpha, scale, loc.weapon_filter)
             end
         end
         ::continue_wb_loc::
