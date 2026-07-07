@@ -80,6 +80,14 @@ local ui = {
     selected_location = 0,
     location_scroll = 0,
 
+    wallbang = {
+        selected_map = "de_mirage",
+        selected_location = 0,
+        map_scroll = 0,
+        loc_scroll = 0,
+        edit_armed = false
+    },
+
     active_slider = nil, active_combo = nil, binding = false, bind_target = nil,
     renaming = false, rename_target = "location", rename_buf = "", popup = { open = false, x = 0, y = 0 },
     anims = {},
@@ -124,7 +132,8 @@ local function osnova_empty_map_data()
             [46] = { locations = {} }, [43] = { locations = {} },
             [47] = { locations = {} },
         },
-        movement_helpers = { [1] = { locations = {} } }
+        movement_helpers = { [1] = { locations = {} } },
+        wallbang = { locations = {} }
     }
 end
 
@@ -134,6 +143,8 @@ local function osnova_ensure_map_data(map)
     local md = ui.map_data[map]
     md.groups = md.groups or {}
     md.movement_helpers = md.movement_helpers or {}
+    md.wallbang = md.wallbang or { locations = {} }
+    md.wallbang.locations = md.wallbang.locations or {}
     for def, _ in pairs(ui.groups) do
         local cdef = osnova_canon_def_early(def)
         md.groups[cdef] = md.groups[cdef] or { locations = {} }
@@ -204,6 +215,13 @@ local function osnova_debug_database_summary(reason)
                 end
                 map_total = map_total + c
             end
+        end
+        if md.wallbang then
+            local c = osnova_count_locations(md.wallbang.locations)
+            if c > 0 then
+                osnova_debug("  map=" .. tostring(map) .. " wallbang locations=" .. tostring(c))
+            end
+            map_total = map_total + c
         end
         total = total + map_total
     end
@@ -329,6 +347,9 @@ local function osnova_sanitize_database()
                     end
                 end
             end
+            -- Wallbang locations can be partially edited (only FROM point saved),
+            -- so do not delete them with regular pos_x sanitizer.
+            if md.wallbang then md.wallbang.locations = md.wallbang.locations or {} end
         end
     end
 end
@@ -355,6 +376,12 @@ local function osnova_merge_loaded_maps()
                     for _, loc in pairs((mh or {}).locations or {}) do
                         table.insert(dst.movement_helpers[id].locations, loc)
                     end
+                end
+            end
+            if md.wallbang then
+                dst.wallbang = dst.wallbang or { locations = {} }
+                for _, loc in pairs((md.wallbang or {}).locations or {}) do
+                    table.insert(dst.wallbang.locations, loc)
                 end
             end
         end
@@ -1470,6 +1497,194 @@ end
 
 
 
+
+-- ==================== WALLBANG HELPER UI / DATA ====================
+local WALLBANG_DEFAULT_MAPS = {
+    "de_mirage", "de_inferno", "de_dust2", "de_nuke", "de_ancient", "de_anubis",
+    "de_overpass", "de_vertigo", "de_train", "de_cache", "de_cbble"
+}
+
+local function osnova_wb_locations(map)
+    map = osnova_normalize_map_name(map or ui.wallbang.selected_map or ui.current_map)
+    local md = osnova_ensure_map_data(map)
+    md.wallbang = md.wallbang or { locations = {} }
+    md.wallbang.locations = md.wallbang.locations or {}
+    return md.wallbang.locations
+end
+
+local function osnova_wb_maps()
+    local seen, maps = {}, {}
+    for _, m in ipairs(WALLBANG_DEFAULT_MAPS) do
+        if not seen[m] then seen[m] = true; table.insert(maps, m) end
+    end
+    for m, _ in pairs(ui.map_data or {}) do
+        local nm = osnova_normalize_map_name(m)
+        if not seen[nm] then seen[nm] = true; table.insert(maps, nm) end
+    end
+    table.sort(maps, function(a,b) return tostring(a) < tostring(b) end)
+    return maps
+end
+
+local function osnova_wb_new_location()
+    local locs = osnova_wb_locations(ui.wallbang.selected_map)
+    local loc = {
+        name = "New Wallbang",
+        from_x = nil, from_y = nil, from_z = nil,
+        to_x = nil, to_y = nil, to_z = nil,
+        step = 1,
+    }
+    table.insert(locs, loc)
+    ui.wallbang.selected_location = #locs
+    osnova_save_database()
+    return loc
+end
+
+local function osnova_wb_current_point()
+    local lp = entities.GetLocalPlayer()
+    if not lp or not lp:IsAlive() then return nil end
+    local o = lp:GetAbsOrigin()
+    return o.x, o.y, o.z + 64
+end
+
+local function osnova_wb_edit_point()
+    local locs = osnova_wb_locations(ui.wallbang.selected_map)
+    local loc = locs[ui.wallbang.selected_location]
+    if not loc then return end
+    local x, y, z = osnova_wb_current_point()
+    if not x then return end
+
+    if (not loc.from_x) or loc.step == 1 then
+        loc.from_x, loc.from_y, loc.from_z = x, y, z
+        loc.step = 2
+    else
+        loc.to_x, loc.to_y, loc.to_z = x, y, z
+        loc.step = 1
+    end
+    osnova_save_database()
+end
+
+local function draw_wb_listbox(x, y, w, h, items, mode)
+    draw.Color(13, 13, 13, 255)
+    draw.FilledRect(x, y, x + w, y + h)
+    draw.Color(unpack(ui.clr.outline))
+    draw.OutlinedRect(x, y, x + w, y + h)
+
+    local scroll_key = (mode == "map") and "map_scroll" or "loc_scroll"
+    if mouse_in(x, y, w, h) then
+        ui.wallbang[scroll_key] = math.max(0, (ui.wallbang[scroll_key] or 0) - input.GetMouseWheelDelta())
+    end
+    local sc = ui.wallbang[scroll_key] or 0
+
+    for i = sc + 1, #items do
+        local iy = y + (i - sc - 1) * 22
+        if iy + 22 > y + h then break end
+        local hover = mouse_in(x, iy, w, 22)
+        local selected = false
+        if mode == "map" then
+            selected = (ui.wallbang.selected_map == items[i])
+        else
+            selected = (ui.wallbang.selected_location == i)
+        end
+
+        if selected then
+            draw.Color(255, 255, 255, 40)
+            draw.FilledRect(x + 1, iy + 1, x + w - 1, iy + 21)
+            draw.Color(255, 255, 255, 220)
+            draw.FilledRect(x + 1, iy + 1, x + 3, iy + 21)
+        elseif hover then
+            draw.Color(255, 255, 255, 8)
+            draw.FilledRect(x + 1, iy + 1, x + w - 1, iy + 21)
+        end
+
+        local text = tostring(items[i].name or items[i])
+        if mode == "loc" then
+            local loc = items[i]
+            local state = (loc.from_x and loc.to_x) and " [2/2]" or (loc.from_x and " [1/2]" or " [0/2]")
+            text = text .. state
+        end
+        if selected and ui.renaming and ui.rename_target == "wallbang" and mode == "loc" then
+            text = ui.rename_buf .. "_"
+        end
+
+        draw.SetFont(f_main)
+        draw.Color(selected and 255 or 160, selected and 255 or 160, selected and 255 or 160, 255)
+        draw.Text(x + 10, iy + 4, text)
+
+        if hover and input.IsButtonPressed(1) and not ui._combo_blocked then
+            if mode == "map" then
+                ui.wallbang.selected_map = items[i]
+                ui.wallbang.selected_location = 0
+                ui.wallbang.loc_scroll = 0
+            else
+                ui.wallbang.selected_location = i
+            end
+            ui._combo_blocked = true
+        end
+    end
+end
+
+local function draw_wallbang_tab(cx, cy, cw, ch)
+    local gap = 12
+    local left_w = math.floor((cw - gap) * 0.42)
+    local right_w = cw - left_w - gap
+    local lx, rx = cx, cx + left_w + gap
+
+    draw.Color(0, 0, 0, 70)
+    draw.ShadowRect(lx, cy, lx + left_w, cy + ch, 10)
+    draw.Color(12, 12, 13, 245)
+    draw.RoundedRectFill(lx, cy, lx + left_w, cy + ch, 6, 6, 6, 6, 6)
+    draw.Color(unpack(ui.clr.outline))
+    draw.RoundedRect(lx, cy, lx + left_w, cy + ch, 6, 6, 6, 6, 6)
+
+    draw.Color(0, 0, 0, 70)
+    draw.ShadowRect(rx, cy, rx + right_w, cy + ch, 10)
+    draw.Color(12, 12, 13, 245)
+    draw.RoundedRectFill(rx, cy, rx + right_w, cy + ch, 6, 6, 6, 6, 6)
+    draw.Color(unpack(ui.clr.outline))
+    draw.RoundedRect(rx, cy, rx + right_w, cy + ch, 6, 6, 6, 6, 6)
+
+    draw.SetFont(f_group)
+    draw.Color(255, 255, 255, 255)
+    draw.Text(lx + 14, cy - 7, "MAP DATABASE")
+    draw.Text(rx + 14, cy - 7, "WALLBANG LOCATIONS")
+
+    local maps = osnova_wb_maps()
+    draw_wb_listbox(lx + 10, cy + 15, left_w - 20, ch - 25, maps, "map")
+
+    local locs = osnova_wb_locations(ui.wallbang.selected_map)
+    draw_wb_listbox(rx + 10, cy + 15, right_w - 20, ch - 112, locs, "loc")
+
+    local bw = right_w - 20
+    local by = cy + ch - 74
+    draw_button(rx + 10, by, bw / 2 - 2, 22, "Create", function()
+        osnova_wb_new_location()
+    end)
+    draw_button(rx + 10 + bw / 2 + 2, by, bw / 2 - 2, 22, "Rename", function()
+        if ui.wallbang.selected_location > 0 and locs[ui.wallbang.selected_location] then
+            ui.renaming = true
+            ui.rename_target = "wallbang"
+            ui.rename_buf = locs[ui.wallbang.selected_location].name or "Wallbang"
+        end
+    end)
+    draw_button(rx + 10, by + 26, bw / 2 - 2, 22, "Delete", function()
+        if ui.wallbang.selected_location > 0 and locs[ui.wallbang.selected_location] then
+            table.remove(locs, ui.wallbang.selected_location)
+            if ui.wallbang.selected_location > #locs then ui.wallbang.selected_location = #locs end
+            osnova_save_database()
+        end
+    end)
+    local edit_label = "Edit"
+    local loc = locs[ui.wallbang.selected_location]
+    if loc then edit_label = loc.from_x and (loc.to_x and "Set From" or "Set To") or "Set From" end
+    draw_button(rx + 10 + bw / 2 + 2, by + 26, bw / 2 - 2, 22, edit_label, function()
+        osnova_wb_edit_point()
+    end)
+
+    draw.SetFont(f_bind)
+    draw.Color(125, 125, 125, 255)
+    draw.Text(rx + 12, cy + ch - 20, "Edit: 1st click = FROM, 2nd click = TO")
+end
+
 -- Drawing helpers
 local function draw_button(x, y, w, h, label, callback)
     local hover = mouse_in(x, y, w, h)
@@ -2488,6 +2703,12 @@ callbacks.Register("Draw", "osnova_gh_full", function()
             if ui.rename_target == "location" and ui.selected_location > 0 then
                 locs[ui.selected_location].name = ui.rename_buf
                 osnova_save_database()
+            elseif ui.rename_target == "wallbang" and ui.wallbang and ui.wallbang.selected_location > 0 then
+                local wb_locs = osnova_wb_locations(ui.wallbang.selected_map)
+                if wb_locs[ui.wallbang.selected_location] then
+                    wb_locs[ui.wallbang.selected_location].name = ui.rename_buf
+                    osnova_save_database()
+                end
             end
             ui.renaming = false
         end
@@ -2938,22 +3159,24 @@ callbacks.Register("Draw", "osnova_gh_full", function()
     end
 
     if ui.tab == 3 then
-        -- Wallbang Helper placeholder tab. The tab appears when Wallbang Helper
-        -- is enabled in OSNOVA loader / osnova_aa Scripts section.
-        draw.Color(0, 0, 0, 70)
-        draw.ShadowRect(cx, cy, cx + cw, cy + ch, 12)
-        draw.Color(12, 12, 13, 245)
-        draw.RoundedRectFill(cx, cy, cx + cw, cy + ch, 6, 6, 6, 6, 6)
-        draw.Color(unpack(ui.clr.outline))
-        draw.RoundedRect(cx, cy, cx + cw, cy + ch, 6, 6, 6, 6, 6)
-
-        draw.SetFont(f_title)
-        draw.Color(255, 255, 255, 255)
-        draw.Text(cx + 18, cy + 18, "WALLBANG HELPER")
-
-        draw.SetFont(f_main)
-        draw.Color(150, 150, 150, 255)
-        draw.Text(cx + 18, cy + 44, "Tab connected. Logic will be added later.")
+        -- Wallbang logic/UI lives in separate osnova_wb module.
+        local WB = rawget(_G, "WB")
+        if WB and WB.DrawTab then
+            WB.DrawTab(cx, cy, cw, ch)
+        else
+            draw.Color(0, 0, 0, 70)
+            draw.ShadowRect(cx, cy, cx + cw, cy + ch, 12)
+            draw.Color(12, 12, 13, 245)
+            draw.RoundedRectFill(cx, cy, cx + cw, cy + ch, 6, 6, 6, 6, 6)
+            draw.Color(unpack(ui.clr.outline))
+            draw.RoundedRect(cx, cy, cx + cw, cy + ch, 6, 6, 6, 6, 6)
+            draw.SetFont(f_title)
+            draw.Color(255, 255, 255, 255)
+            draw.Text(cx + 18, cy + 18, "WALLBANG HELPER")
+            draw.SetFont(f_main)
+            draw.Color(150, 150, 150, 255)
+            draw.Text(cx + 18, cy + 44, "osnova_wb module is not loaded")
+        end
     end
 
     render_active_combo()
