@@ -4,6 +4,41 @@
 
 local unpack = unpack or table.unpack
 
+-- === ICON LOADER INJECTED ===
+local osnova_icons = {
+    [45] = "weapon_smokegrenade.png",
+    [44] = "weapon_hegrenade.png",
+    [46] = "weapon_molotov.png",
+    [43] = "weapon_flashbang.png",
+    [47] = "weapon_decoy.png"
+}
+local BASE_URL = "https://raw.githubusercontent.com/Spencer-png/cs2-gun-icons/main/cs2%20weapons/"
+local textures_to_create = {}
+local cached_textures = {}
+
+local function make_rgba_white(rgba_string)
+    local new_rgba = {}
+    for i = 1, #rgba_string, 4 do
+        local a = string.byte(rgba_string, i + 3)
+        table.insert(new_rgba, string.char(255, 255, 255, a))
+    end
+    return table.concat(new_rgba)
+end
+
+for id, file in pairs(osnova_icons) do
+    http.Get(BASE_URL .. file, function(data)
+        if data then
+            local rgba, width, height = common.DecodePNG(data)
+            if rgba then
+                textures_to_create[id] = { rgba = make_rgba_white(rgba), width = width, height = height }
+            end
+        end
+    end)
+end
+-- ============================
+
+
+
 local ui = {
     x = 200, y = 200, w = 600, h = 503,
     open = true, tab = 1, dragging = false, dx = 0, dy = 0,
@@ -1123,7 +1158,7 @@ local function render_world_locations()
         end
     end
 
-    local function add_renderable_location(loc, idx, is_selected)
+    local function add_renderable_location(loc, idx, is_selected, icon_id)
         if loc.pos_x and loc.pos_y and loc.pos_z then
             local dx = loc.pos_x - player_origin.x
             local dy = loc.pos_y - player_origin.y
@@ -1213,7 +1248,7 @@ local function render_world_locations()
                 if osnova_movement_feature_enabled() then
                     local locs = osnova_get_locations_for(map, "movement", ui.selected_movement_helper)
                     for i, loc in pairs(locs) do
-                        add_renderable_location(loc, i, map == ui.current_map and ui.selected_location == i)
+                        add_renderable_location(loc, i, map == ui.current_map and ui.selected_location == i, nil)
                     end
                 end
             else
@@ -1225,7 +1260,7 @@ local function render_world_locations()
                     if osnova_grenade_feature_enabled(cdef) then
                         local locs = osnova_get_locations_for(map, "group", cdef)
                         for i, loc in pairs(locs) do
-                            add_renderable_location(loc, i, map == ui.current_map and ui.selected_group == cdef and ui.selected_location == i)
+                            add_renderable_location(loc, i, map == ui.current_map and ui.selected_group == cdef and ui.selected_location == i, cdef)
                         end
                     end
                 end
@@ -1235,7 +1270,7 @@ local function render_world_locations()
         if not osnova_movement_feature_enabled() then return end
         local locs = osnova_get_locations_for(ui.current_map, "movement", ui.selected_movement_helper)
         for i, loc in pairs(locs) do
-            add_renderable_location(loc, i, ui.selected_location == i)
+            add_renderable_location(loc, i, ui.selected_location == i, nil)
         end
     else
         -- Render all grenade-group locations on current map. Gameplay still uses
@@ -1246,7 +1281,7 @@ local function render_world_locations()
             if osnova_grenade_feature_enabled(cdef) then
                 local locs = osnova_get_locations_for(ui.current_map, "group", cdef)
                 for i, loc in pairs(locs) do
-                    add_renderable_location(loc, i, ui.selected_group == cdef and ui.selected_location == i)
+                    add_renderable_location(loc, i, ui.selected_group == cdef and ui.selected_location == i, cdef)
                 end
             end
         end
@@ -1396,7 +1431,11 @@ local function render_world_locations()
             local nw = draw.GetTextSize(name)
             local dist_str = ""
             local dw = 0
-            local line_w = nw + (dw > 0 and (dw + 10) or 0)
+            local icon_w = 0
+            if it.icon_id and cached_textures[it.icon_id] then
+                icon_w = math.floor(cached_textures[it.icon_id].width * (box_scale or 1)) + 5
+            end
+            local line_w = icon_w + nw + (dw > 0 and (dw + 10) or 0)
             if line_w > max_w then max_w = line_w end
 
             local line_alpha = 1
@@ -1404,7 +1443,7 @@ local function render_world_locations()
                 line_alpha = partial_line_alpha
             end
 
-            table.insert(lines, { name = name, dist = dist_str, dist_w = dw, sel = it.is_selected, more = false, alpha = line_alpha })
+            table.insert(lines, { name = name, dist = dist_str, dist_w = dw, sel = it.is_selected, more = false, alpha = line_alpha, icon_id = it.icon_id })
         end
 
         local more_alpha = 0
@@ -1461,7 +1500,25 @@ local function render_world_locations()
                 else
                     draw.Color(170, 170, 170, cluster_alpha * line_alpha)
                 end
-                draw.Text(box_x + accent_w + pad_x, ly + math.max(1, math.floor(2 * box_scale)), ln.name)
+                local text_x = box_x + accent_w + pad_x
+                if ln.icon_id and cached_textures[ln.icon_id] then
+                    local tex = cached_textures[ln.icon_id]
+                    local tex_w = math.floor(tex.width * box_scale)
+                    local tex_h = math.floor(tex.height * box_scale)
+                    local tex_y = ly + (line_h - tex_h) / 2
+                    
+                    if ln.sel then
+                        draw.Color(255, 255, 255, cluster_alpha * line_alpha)
+                    else
+                        draw.Color(170, 170, 170, cluster_alpha * line_alpha)
+                    end
+                    draw.SetTexture(tex.texture)
+                    draw.FilledRect(text_x, tex_y, text_x + tex_w, tex_y + tex_h)
+                    draw.SetTexture(nil)
+                    
+                    text_x = text_x + tex_w + 5
+                end
+                draw.Text(text_x, ly + math.max(1, math.floor(2 * box_scale)), ln.name)
 
                 if ln.dist ~= "" then
                     draw.SetFont(f_distance)
@@ -2611,6 +2668,16 @@ local function osnova_update_helper_active()
 end
 
 callbacks.Register("Draw", "osnova_gh_full", function()
+
+    for id, data in pairs(textures_to_create) do
+        cached_textures[id] = {
+            texture = draw.CreateTexture(data.rgba, data.width, data.height),
+            width = data.width,
+            height = data.height
+        }
+        textures_to_create[id] = nil
+    end
+
     local menu_active = gui.Reference("Menu"):IsActive()
     ui.menu_active = menu_active
     local mk = input.IsButtonDown(72)
