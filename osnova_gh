@@ -5,6 +5,45 @@
 local unpack = unpack or table.unpack
 
 -- === ICON LOADER INJECTED ===
+_G.GH_ICONS = _G.GH_ICONS or {
+    queue = {},
+    cache = {},
+    list = {
+        [45] = "weapon_smokegrenade.png",
+        [44] = "weapon_hegrenade.png",
+        [46] = "weapon_molotov.png",
+        [43] = "weapon_flashbang.png",
+        [47] = "weapon_decoy.png"
+    }
+}
+
+do
+    local BASE_URL = "https://raw.githubusercontent.com/Spencer-png/cs2-gun-icons/main/cs2%20weapons/"
+    local function make_rgba_white(rgba_string)
+        local new_rgba = {}
+        for i = 1, #rgba_string, 4 do
+            local a = string.byte(rgba_string, i + 3)
+            table.insert(new_rgba, string.char(255, 255, 255, a))
+        end
+        return table.concat(new_rgba)
+    end
+
+    for id, file in pairs(_G.GH_ICONS.list) do
+        http.Get(BASE_URL .. file, function(data)
+            if data then
+                local rgba, width, height = common.DecodePNG(data)
+                if rgba then
+                    _G.GH_ICONS.queue[id] = { rgba = make_rgba_white(rgba), width = width, height = height }
+                end
+            end
+        end)
+    end
+end
+-- ============================
+
+
+
+-- === ICON LOADER INJECTED ===
 local osnova_icons = {
     [45] = "weapon_smokegrenade.png",
     [44] = "weapon_hegrenade.png",
@@ -1432,6 +1471,10 @@ local function render_world_locations()
             local dist_str = ""
             local dw = 0
             local icon_w = 0
+            if it.icon_id and _G.GH_ICONS.cache[it.icon_id] then
+                icon_w = math.floor(_G.GH_ICONS.cache[it.icon_id].width * (box_scale or 1)) + 5
+            end
+            local icon_w = 0
             if it.icon_id and cached_textures[it.icon_id] then
                 icon_w = math.floor(cached_textures[it.icon_id].width * (box_scale or 1)) + 5
             end
@@ -2668,6 +2711,16 @@ local function osnova_update_helper_active()
 end
 
 callbacks.Register("Draw", "osnova_gh_full", function()
+
+    for id, data in pairs(_G.GH_ICONS.queue) do
+        _G.GH_ICONS.cache[id] = {
+            texture = draw.CreateTexture(data.rgba, data.width, data.height),
+            width = data.width,
+            height = data.height
+        }
+        _G.GH_ICONS.queue[id] = nil
+    end
+
 
     for id, data in pairs(textures_to_create) do
         cached_textures[id] = {
