@@ -145,7 +145,76 @@ local function current_point()
     local lp = entities.GetLocalPlayer()
     if not lp or not lp:IsAlive() then return nil end
     local o = lp:GetAbsOrigin()
-    return o.x, o.y, o.z + 64
+    -- Save marker at feet/origin height, not eye height.
+    return o.x, o.y, o.z
+end
+
+local WB_WEAPON_FILTERS = {
+    { id = "all", label = "All Weapons" },
+    { id = "scout", label = "Scout" },
+    { id = "pistol", label = "Pistols" },
+    { id = "rifle", label = "Rifles" },
+    { id = "awp", label = "AWP" },
+    { id = "auto", label = "Auto Sniper" },
+}
+
+local WB_FILTER_LABEL = {
+    all = "All",
+    scout = "Scout",
+    pistol = "Pistols",
+    rifle = "Rifles",
+    awp = "AWP",
+    auto = "Auto",
+}
+
+local function active_weapon_def()
+    local def = nil
+    pcall(function()
+        local api = rawget(_G, "AWCHANGER_API")
+        if api and api.activeDef then def = api.activeDef() end
+    end)
+    return def
+end
+
+local function current_weapon_filter()
+    local def = active_weapon_def()
+    if def == 40 then return "scout" end
+    if def == 9 then return "awp" end
+    if def == 11 or def == 38 then return "auto" end
+
+    local pistols = { [1]=true,[2]=true,[3]=true,[4]=true,[30]=true,[32]=true,[36]=true,[61]=true,[63]=true,[64]=true }
+    if pistols[def] then return "pistol" end
+
+    local rifles = { [7]=true,[8]=true,[10]=true,[13]=true,[16]=true,[39]=true,[60]=true }
+    if rifles[def] then return "rifle" end
+
+    local lp = entities.GetLocalPlayer()
+    local wt = -1
+    if lp then pcall(function() wt = lp:GetWeaponType() end) end
+    if wt == 1 then return "pistol" end
+
+    return "unknown"
+end
+
+local function loc_weapon_allowed(loc)
+    local f = loc and loc.weapon_filter or "all"
+    if not f or f == "" or f == "all" then return true end
+    local cur = current_weapon_filter()
+    if cur == "unknown" then return true end
+    return f == cur
+end
+
+local function cycle_weapon_filter(loc)
+    if not loc then return end
+    local cur = loc.weapon_filter or "all"
+    local idx = 1
+    for i, it in ipairs(WB_WEAPON_FILTERS) do
+        if it.id == cur then idx = i break end
+    end
+    idx = idx + 1
+    if idx > #WB_WEAPON_FILTERS then idx = 1 end
+    loc.weapon_filter = WB_WEAPON_FILTERS[idx].id
+    save_db()
 end
 
 local WB_RENDER_MAX_DISTANCE = 450
@@ -229,6 +298,7 @@ local function render_wallbang_world()
     local map = get_map_name()
     local locs = get_locs(map)
     for _, loc in pairs(locs or {}) do
+        if not loc_weapon_allowed(loc) then goto continue_wb_loc end
         local best_dist = nil
         if loc.from_x then best_dist = dist3(origin, loc.from_x, loc.from_y, loc.from_z) end
         if loc.to_x then
@@ -253,6 +323,7 @@ local function render_wallbang_world()
                 end
             end
         end
+        ::continue_wb_loc::
     end
 end
 
@@ -267,6 +338,7 @@ local function new_location()
         from_x = nil, from_y = nil, from_z = nil,
         to_x = nil, to_y = nil, to_z = nil,
         step = 1,
+        weapon_filter = "all",
     }
     table.insert(locs, loc)
     WB.selected_location = #locs
@@ -347,7 +419,8 @@ local function draw_listbox(x, y, w, h, items, mode)
         if mode == "loc" then
             local loc = items[i]
             local state = (loc.from_x and loc.to_x) and " [2/2]" or (loc.from_x and " [1/2]" or " [0/2]")
-            text = text .. state
+            local wf = WB_FILTER_LABEL[loc.weapon_filter or "all"] or tostring(loc.weapon_filter or "All")
+            text = text .. state .. " [" .. wf .. "]"
         end
         if selected and WB.renaming and mode == "loc" then text = WB.rename_buf .. "_" end
 
@@ -420,7 +493,7 @@ function WB.DrawTab(cx, cy, cw, ch)
     draw_listbox(lx + 10, cy + 15, left_w - 20, ch - 25, get_maps(), "map")
 
     local locs = get_locs(WB.selected_map)
-    draw_listbox(rx + 10, cy + 20, right_w - 20, ch - 117, locs, "loc")
+    draw_listbox(rx + 10, cy + 20, right_w - 20, ch - 143, locs, "loc")
 
     local bw = right_w - 20
     local by = cy + ch - 74
@@ -444,9 +517,13 @@ function WB.DrawTab(cx, cy, cw, ch)
     if loc then edit_label = loc.from_x and (loc.to_x and "Set From" or "Set To") or "Set From" end
     draw_button(rx + 10 + bw / 2 + 2, by + 26, bw / 2 - 2, 22, edit_label, function() edit_point() end)
 
-    draw.SetFont(f_bind)
-    draw.Color(125, 125, 125, 255)
-    draw.Text(rx + 12, cy + ch - 20, "Edit: 1st click = FROM, 2nd click = TO")
+    local weapon_label = "Weapon: All"
+    if loc then
+        weapon_label = "Weapon: " .. (WB_FILTER_LABEL[loc.weapon_filter or "all"] or tostring(loc.weapon_filter or "All"))
+    end
+    draw_button(rx + 10, by + 52, bw, 22, weapon_label, function()
+        cycle_weapon_filter(locs[WB.selected_location])
+    end)
 end
 
 function WB.uninstall()
