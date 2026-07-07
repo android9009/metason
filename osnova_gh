@@ -31,6 +31,22 @@ local ui = {
         through_walls = false
     },
 
+    cloud = {
+        enabled = false,
+        auto_sync = false,
+        current_map_only = false,
+        owner = "android9009",
+        repo = "metason",
+        branch = "main",
+        root = "lua",
+        people = {}, -- kept for compatibility; not used anymore
+        files = {},
+        selected_person = 1,
+        selected_file = 1,
+        synced = false,
+        status = "local files"
+    },
+
     -- === NEW: Grenade Groups (instead of folders) ===
     groups = {
         [45] = { name = "Smoke", short = "SMOKE", locations = {} },
@@ -346,6 +362,154 @@ local function osnova_load_database()
 end
 
 osnova_load_database()
+
+-- ==================== GITHUB CLOUD LOCATIONS ====================
+-- Cloud packs are pulled from GitHub directly from repo /lua folder.
+-- Upload/create/delete is intentionally not handled here; this only Refresh + Load.
+local function osnova_cloud_api_url(path)
+    path = path or ui.cloud.root
+    return "https://api.github.com/repos/" .. ui.cloud.owner .. "/" .. ui.cloud.repo .. "/contents/" .. path .. "?ref=" .. ui.cloud.branch
+end
+
+local function osnova_cloud_raw_url(path)
+    return "https://raw.githubusercontent.com/" .. ui.cloud.owner .. "/" .. ui.cloud.repo .. "/" .. ui.cloud.branch .. "/" .. path
+end
+
+local function osnova_cloud_fetch(url)
+    local ok, body = pcall(function() return http.Get(url) end)
+    if ok and body and body ~= "" then return body end
+    return nil
+end
+
+local function osnova_cloud_parse_contents(json)
+    local items = {}
+    if not json or json == "" then return items end
+    for obj in string.gmatch(json, "{%s*.-%s*}") do
+        local name = obj:match('"name"%s*:%s*"([^"]+)"')
+        local path = obj:match('"path"%s*:%s*"([^"]+)"')
+        local typ = obj:match('"type"%s*:%s*"([^"]+)"')
+        local download = obj:match('"download_url"%s*:%s*"([^"]-)"')
+        if name and path and typ then
+            table.insert(items, { name = name, path = path, type = typ, download_url = download })
+        end
+    end
+    table.sort(items, function(a, b) return tostring(a.name) < tostring(b.name) end)
+    return items
+end
+
+local function osnova_cloud_file_allowed(name)
+    name = tostring(name or "")
+    if name:match("%.txt$") then return true end
+    if name:match("%.lua$") then return true end
+    -- also allow extensionless packs like current /lua/gh
+    if not name:match("%.[^%.]+$") then return true end
+    return false
+end
+
+local function osnova_cloud_sync_files()
+    ui.cloud.files = {}
+    ui.cloud.selected_file = 1
+
+    local body = osnova_cloud_fetch(osnova_cloud_api_url(ui.cloud.root))
+    local items = osnova_cloud_parse_contents(body)
+    for _, it in ipairs(items) do
+        if it.type == "file" and osnova_cloud_file_allowed(it.name) then
+            table.insert(ui.cloud.files, it)
+        end
+    end
+
+    ui.cloud.synced = true
+    ui.cloud.enabled = (#ui.cloud.files > 0) and true or ui.cloud.enabled
+    ui.cloud.status = "github files: " .. tostring(#ui.cloud.files)
+end
+
+-- Backwards name kept for older calls.
+local function osnova_cloud_sync_people()
+    osnova_cloud_sync_files()
+end
+
+local function osnova_cloud_load_file_data(file_item)
+    if not file_item then return nil end
+    local url = file_item.download_url
+    if not url or url == "null" or url == "" then url = osnova_cloud_raw_url(file_item.path) end
+    local body = osnova_cloud_fetch(url)
+    if not body then return nil end
+    local loader = loadstring or load
+    local ok_load, data = pcall(function()
+        local fn = loader(body)
+        return fn and fn()
+    end)
+    if ok_load and type(data) == "table" then return data end
+    return nil
+end
+
+local function osnova_cloud_location_exists(list, loc)
+    if not loc then return false end
+    for _, existing in pairs(list or {}) do
+        if existing and existing.name == loc.name
+            and math.abs((existing.pos_x or 0) - (loc.pos_x or 0)) < 0.01
+            and math.abs((existing.pos_y or 0) - (loc.pos_y or 0)) < 0.01
+            and math.abs((existing.pos_z or 0) - (loc.pos_z or 0)) < 0.01 then
+            return true
+        end
+    end
+    return false
+end
+
+local function osnova_cloud_append_location(dst, loc, source)
+    if not osnova_location_has_position(loc) then return 0 end
+    if osnova_cloud_location_exists(dst, loc) then return 0 end
+    loc.cloud_author = source
+    loc.cloud_source = source
+    table.insert(dst, loc)
+    return 1
+end
+
+local function osnova_cloud_import_data(data, source)
+    if type(data) ~= "table" then return 0 end
+    local imported = 0
+    local target_current_only = ui.cloud.current_map_only
+    osnova_update_current_map()
+
+    for map, md in pairs(data) do
+        if type(md) == "table" then
+            local target_map = target_current_only and ui.current_map or osnova_normalize_map_name(map)
+            local dst_md = osnova_ensure_map_data(target_map)
+
+            if md.groups then
+                for def, grp in pairs(md.groups) do
+                    local cdef = osnova_canon_def_early(def)
+                    dst_md.groups[cdef] = dst_md.groups[cdef] or { locations = {} }
+                    for _, loc in pairs((grp or {}).locations or {}) do
+                        imported = imported + osnova_cloud_append_location(dst_md.groups[cdef].locations, loc, source)
+                    end
+                end
+            end
+
+            if md.movement_helpers then
+                for id, mh in pairs(md.movement_helpers) do
+                    dst_md.movement_helpers[id] = dst_md.movement_helpers[id] or { locations = {} }
+                    for _, loc in pairs((mh or {}).locations or {}) do
+                        imported = imported + osnova_cloud_append_location(dst_md.movement_helpers[id].locations, loc, source)
+                    end
+                end
+            end
+        end
+    end
+
+    if imported > 0 then osnova_save_database(); sync_current_locations() end
+    return imported
+end
+
+local function osnova_cloud_import_selected()
+    local file_item = ui.cloud.files[ui.cloud.selected_file]
+    if not file_item then ui.cloud.status = "select file"; return end
+    local data = osnova_cloud_load_file_data(file_item)
+    if not data then ui.cloud.status = "bad github file"; return end
+    local n = osnova_cloud_import_data(data, file_item.name)
+    ui.cloud.enabled = true
+    ui.cloud.status = "loaded: " .. tostring(n)
+end
 
 -- Helper: get current locations from the active left browser selection.
 -- If the top list owns selection -> grenade group locations.
@@ -1877,6 +2041,108 @@ local function render_visual_multibox()
     end
 end
 
+
+local function draw_cloud_multibox(x, y, w, label)
+    draw.SetFont(f_main)
+    draw.Color(230, 230, 230, 255)
+    draw.Text(x, y, label)
+    local bx, by, bh = x, y + 16, 24
+    local open = ui.active_cloud_multibox ~= nil
+    local hover = mouse_in(bx, by, w, bh)
+    draw.Color(0, 0, 0, 90)
+    draw.ShadowRect(bx, by, bx + w, by + bh, 8)
+    draw.Color(18, 18, 18, 245)
+    draw.RoundedRectFill(bx, by, bx + w, by + bh, 5, 5, 5, 5, 5)
+    draw.Color(hover and 70 or 42, hover and 70 or 42, hover and 70 or 42, 255)
+    draw.RoundedRect(bx, by, bx + w, by + bh, 5, 5, 5, 5, 5)
+    local selected = ui.cloud.files[ui.cloud.selected_file]
+    draw.Color(255, 255, 255, 210)
+    draw.RoundedRectFill(bx + 3, by + 4, bx + 6, by + bh - 4, 2, 2, 0, 2, 0)
+    draw.SetFont(f_bind)
+    draw.Color(225, 225, 225, 255)
+    draw.Text(bx + 14, by + 6, selected and selected.name or (ui.cloud.status or "Refresh first"))
+    draw.Color(180, 180, 180, 255)
+    local ax, ay = bx + w - 18, by + 9
+    if open then draw.Line(ax, ay + 6, ax + 5, ay); draw.Line(ax + 5, ay, ax + 10, ay + 6)
+    else draw.Line(ax, ay, ax + 5, ay + 6); draw.Line(ax + 5, ay + 6, ax + 10, ay) end
+    if hover and input.IsButtonPressed(1) and not ui._combo_blocked then
+        if ui.active_cloud_multibox then ui.active_cloud_multibox = nil else ui.active_cloud_multibox = { x = bx, y = by + bh + 4, w = w } end
+        ui._combo_blocked = true
+    end
+end
+
+local function process_cloud_multibox_input()
+    if not ui.active_cloud_multibox then return end
+    if not input.IsButtonPressed(1) then return end
+    local c = ui.active_cloud_multibox
+    local row_h = 24
+    local count = math.max(1, #ui.cloud.files)
+    local h = count * row_h + 8
+    if #ui.cloud.files == 0 then
+        if mouse_in(c.x + 4, c.y + 4, c.w - 8, row_h) then osnova_cloud_sync_files(); ui._combo_blocked = true; return end
+    else
+        for i, it in ipairs(ui.cloud.files) do
+            local iy = c.y + 4 + (i - 1) * row_h
+            if mouse_in(c.x + 4, iy, c.w - 8, row_h) then
+                ui.cloud.selected_file = i
+                ui.cloud.enabled = true
+                ui.cloud.status = "selected: " .. tostring(it.name)
+                ui.active_cloud_multibox = nil
+                ui._combo_blocked = true
+                return
+            end
+        end
+    end
+    if not mouse_in(c.x, c.y - 28, c.w, h + 28) then ui.active_cloud_multibox = nil; ui._combo_blocked = true end
+end
+
+local function render_cloud_multibox()
+    if not ui.active_cloud_multibox then return end
+    local c = ui.active_cloud_multibox
+    local row_h = 24
+    local count = math.max(1, #ui.cloud.files)
+    local h = count * row_h + 8
+    draw.Color(0, 0, 0, 120)
+    draw.ShadowRect(c.x, c.y, c.x + c.w, c.y + h, 14)
+    draw.Color(13, 13, 13, 250)
+    draw.RoundedRectFill(c.x, c.y, c.x + c.w, c.y + h, 6, 6, 6, 6, 6)
+    draw.Color(48, 48, 48, 255)
+    draw.RoundedRect(c.x, c.y, c.x + c.w, c.y + h, 6, 6, 6, 6, 6)
+    if #ui.cloud.files == 0 then
+        draw.SetFont(f_bind); draw.Color(180,180,180,255); draw.Text(c.x + 12, c.y + 10, "Click to Refresh")
+        return
+    end
+    for i, it in ipairs(ui.cloud.files) do
+        local iy = c.y + 4 + (i - 1) * row_h
+        local hov = mouse_in(c.x + 4, iy, c.w - 8, row_h)
+        local sel = i == ui.cloud.selected_file
+        if sel then draw.Color(72,72,76,235); draw.RoundedRectFill(c.x+4,iy+1,c.x+c.w-4,iy+row_h-1,4,4,4,4,4)
+        elseif hov then draw.Color(255,255,255,12); draw.RoundedRectFill(c.x+4,iy+1,c.x+c.w-4,iy+row_h-1,4,4,4,4,4) end
+        draw.SetFont(f_bind)
+        draw.Color(sel and 235 or 180, sel and 235 or 180, sel and 235 or 180,255)
+        draw.Text(c.x + 12, iy + 6, it.name)
+    end
+end
+
+local function draw_cloud_builder(x, y, w, h)
+    if not ui.cloud.enabled then return end
+    draw.Color(14, 14, 15, 245)
+    draw.RoundedRectFill(x, y, x + w, y + h, 5, 5, 5, 5, 5)
+    draw.Color(45, 45, 48, 255)
+    draw.RoundedRect(x, y, x + w, y + h, 5, 5, 5, 5, 5)
+    draw.SetFont(f_bind)
+    draw.Color(210, 210, 210, 255)
+    local file_item = ui.cloud.files[ui.cloud.selected_file]
+    local f_name = file_item and file_item.name or "none"
+    draw.Text(x + 8, y + 6, "Cloud: " .. f_name)
+    draw.Color(120, 120, 120, 255)
+    draw.Text(x + 8, y + 22, ui.cloud.status or "")
+    local by = y + h - 24
+    local bw = (w - 14) / 2
+    draw_button(x + 6, by, bw, 20, "Refresh", function() osnova_cloud_sync_files() end)
+    draw_button(x + 8 + bw, by, bw, 20, "Load", function() osnova_cloud_import_selected() end)
+end
+
 local function save_location_position_and_aim(loc)
     pcall(function()
         local local_player = entities.GetLocalPlayer()
@@ -2115,6 +2381,9 @@ callbacks.Register("Draw", "osnova_gh_full", function()
 
     -- Enable logic
     osnova_update_helper_active()
+    if ui.cloud.enabled and ui.cloud.auto_sync and not ui.cloud.synced then
+        osnova_cloud_sync_people()
+    end
 
     -- Global Save Location key
     if not ui.renaming and not ui.binding then
@@ -2151,6 +2420,7 @@ callbacks.Register("Draw", "osnova_gh_full", function()
     process_combo_input()
     process_feature_multibox_input()
     process_visual_multibox_input()
+    process_cloud_multibox_input()
 
     -- If the Enable Helper mode popup is open, consume clicks inside it before
     -- the normal controls draw. This prevents buttons/sliders underneath the
@@ -2327,10 +2597,11 @@ callbacks.Register("Draw", "osnova_gh_full", function()
 
         draw_feature_multibox(r_item_x, ry + 25, r_item_w, "Enabled Features")
         draw_visual_multibox(r_item_x, ry + 70, r_item_w, "Visual Features")
-        draw_slider(r_item_x, ry + 127, r_item_w, "Smoothness", ui.settings, "smooth", 0, 100)
-        draw_slider(r_item_x, ry + 167, r_item_w, "Reaction Time", ui.settings, "reaction", 0, 1000, "ms")
-        draw_slider(r_item_x, ry + 207, r_item_w, "Aim FOV", ui.settings, "fov", 40, 600, "px")
-        draw_toggle(r_item_x, ry + 247, r_item_w, "Show All Maps", ui, "show_all_maps")
+        draw_cloud_multibox(r_item_x, ry + 115, r_item_w, "Cloud Locations")
+        draw_slider(r_item_x, ry + 172, r_item_w, "Smoothness", ui.settings, "smooth", 0, 100)
+        draw_slider(r_item_x, ry + 212, r_item_w, "Reaction Time", ui.settings, "reaction", 0, 1000, "ms")
+        draw_slider(r_item_x, ry + 252, r_item_w, "Aim FOV", ui.settings, "fov", 40, 600, "px")
+        draw_toggle(r_item_x, ry + 292, r_item_w, "Show All Maps", ui, "show_all_maps")
     end
 
     if ui.tab == 2 then
@@ -2398,7 +2669,12 @@ callbacks.Register("Draw", "osnova_gh_full", function()
             draw.Text(rx + 14, cy - 7, "LOCATIONS")
 
             local locs = get_current_locations()
-            draw_listbox(rx + 10, cy + 15, rw - 20, ch - 110, locs, "location")
+            local list_h = (ui.cloud.enabled and (ch - 170) or (ch - 110))
+            draw_listbox(rx + 10, cy + 15, rw - 20, list_h, locs, "location")
+
+            if ui.cloud.enabled then
+                draw_cloud_builder(rx + 10, cy + ch - 148, rw - 20, 68)
+            end
 
             -- bottom action buttons
             local fbw = rw - 20
@@ -2615,6 +2891,7 @@ callbacks.Register("Draw", "osnova_gh_full", function()
     render_active_combo()
     render_feature_multibox()
     render_visual_multibox()
+    render_cloud_multibox()
 
     if ui.popup.open then
         local px, py, pw, ph = ui.popup.x, ui.popup.y, 142, 88
