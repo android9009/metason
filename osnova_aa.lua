@@ -3706,6 +3706,7 @@ end
 -- on_draw — main draw callback (refactored to fix >200 locals)
 -- ============================================================
 local gh_was_enabled = false
+local wb_was_enabled = false
 local gh_base_url = "https://raw.githubusercontent.com/android9009/metason/main/"
 
 function on_draw()
@@ -3715,6 +3716,31 @@ function on_draw()
 		g.wb_enable:SetInvisible(sel ~= 0)
 		g.gr_enable:SetInvisible(sel ~= 1)
 		g.sync_enable:SetInvisible(sel ~= 2)
+	end
+
+	-- Wallbang Helper: checkbox calls the regular OSNOVA loader.
+	-- The WB module only enables the WALLBANG tab in Grenade Helper for now.
+	if g.wb_enable then
+		local wb_on = g.wb_enable:GetValue()
+		if wb_on and not wb_was_enabled then
+			wb_was_enabled = true
+			local L = rawget(_G, "__OSNOVA")
+			if L and L.load_wb then
+				pcall(L.load_wb)
+			else
+				print("[osnova] loader WB api missing; reload via osnova_loader_gh_api.lua")
+			end
+		elseif not wb_on and wb_was_enabled then
+			wb_was_enabled = false
+			local L = rawget(_G, "__OSNOVA")
+			if L and L.unload_wb then
+				pcall(L.unload_wb)
+			else
+				local WB_mod = rawget(_G, "WB")
+				if WB_mod and WB_mod.uninstall then pcall(WB_mod.uninstall) end
+				_G.OSNOVA_WALLBANG_ENABLED = false
+			end
+		end
 	end
 
 	-- Grenade Helper: checkbox only calls the regular OSNOVA loader.
