@@ -218,7 +218,12 @@ local function draw_listbox(x, y, w, h, items, mode)
         local iy = y + (i - sc - 1) * 22
         if iy + 22 > y + h then break end
         local hover = mouse_in(x, iy, w, 22)
-        local selected = mode == "map" and (normalize_map_name(WB.selected_map) == normalize_map_name(items[i])) or (WB.selected_location == i)
+        local selected = false
+        if mode == "map" then
+            selected = (normalize_map_name(WB.selected_map) == normalize_map_name(items[i]))
+        else
+            selected = (WB.selected_location == i)
+        end
 
         if selected then
             draw.Color(255, 255, 255, 40)
