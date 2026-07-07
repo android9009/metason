@@ -39,11 +39,14 @@ local function mouse_in(x, y, w, h)
 end
 
 local function normalize_map_name(map)
-    map = tostring(map or "unknown")
+    map = tostring(map or "")
     map = map:gsub("\\", "/")
     map = map:match("([^/]+)$") or map
     map = map:gsub("%.bsp$", "")
     map = map:gsub("%.vpk$", "")
+    if map == "" or map == "empty" or map == "nil" then
+        map = "unknown"
+    end
     return map
 end
 
@@ -114,7 +117,8 @@ local function load_db()
 
     WB.current_map = get_map_name()
     ensure_map(WB.current_map)
-    if not WB.selected_map or WB.selected_map == "" then WB.selected_map = WB.current_map end
+    WB.selected_map = normalize_map_name(WB.selected_map)
+    if not WB.selected_map or WB.selected_map == "unknown" then WB.selected_map = WB.current_map end
 end
 
 local function get_maps()
@@ -122,9 +126,12 @@ local function get_maps()
     for _, m in ipairs(DEFAULT_MAPS) do
         if not seen[m] then seen[m] = true; table.insert(maps, m) end
     end
-    for m, _ in pairs(WB.maps or {}) do
+    for m, md in pairs(WB.maps or {}) do
         local nm = normalize_map_name(m)
-        if not seen[nm] then seen[nm] = true; table.insert(maps, nm) end
+        local has_locs = md and md.locations and #md.locations > 0
+        if nm ~= "unknown" or has_locs or WB.selected_map == "unknown" then
+            if not seen[nm] then seen[nm] = true; table.insert(maps, nm) end
+        end
     end
     table.sort(maps, function(a, b) return tostring(a) < tostring(b) end)
     return maps
@@ -142,6 +149,10 @@ local function current_point()
 end
 
 local function new_location()
+    WB.selected_map = normalize_map_name(WB.selected_map)
+    if WB.selected_map == "unknown" and WB.current_map and WB.current_map ~= "unknown" then
+        WB.selected_map = WB.current_map
+    end
     local locs = get_locs(WB.selected_map)
     local loc = {
         name = "New Wallbang",
@@ -207,7 +218,7 @@ local function draw_listbox(x, y, w, h, items, mode)
         local iy = y + (i - sc - 1) * 22
         if iy + 22 > y + h then break end
         local hover = mouse_in(x, iy, w, 22)
-        local selected = mode == "map" and (WB.selected_map == items[i]) or (WB.selected_location == i)
+        local selected = mode == "map" and (normalize_map_name(WB.selected_map) == normalize_map_name(items[i])) or (WB.selected_location == i)
 
         if selected then
             draw.Color(255, 255, 255, 40)
@@ -233,7 +244,7 @@ local function draw_listbox(x, y, w, h, items, mode)
 
         if hover and input.IsButtonPressed(1) then
             if mode == "map" then
-                WB.selected_map = items[i]
+                WB.selected_map = normalize_map_name(items[i])
                 WB.selected_location = 0
                 WB.loc_scroll = 0
                 ensure_map(WB.selected_map)
@@ -261,6 +272,8 @@ end
 function WB.DrawTab(cx, cy, cw, ch)
     WB.current_map = get_map_name()
     ensure_map(WB.current_map)
+    WB.selected_map = normalize_map_name(WB.selected_map)
+    if WB.selected_map == "unknown" and WB.current_map ~= "unknown" then WB.selected_map = WB.current_map end
     process_rename()
 
     local gap = 12
