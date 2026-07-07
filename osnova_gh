@@ -1,0 +1,3749 @@
+-- Grenade Helper [Osnova - Full Version with Aim Point + Grenade Groups]
+-- Refactored: instead of user folders → fixed grenade type groups
+-- Auto-opens correct group when you hold a specific grenade
+
+local unpack = unpack or table.unpack
+
+local ui = {
+    x = 200, y = 200, w = 600, h = 503,
+    open = true, tab = 1, dragging = false, dx = 0, dy = 0,
+    show_locations = true,
+    show_distance = false,
+    show_all_maps = false,
+    current_map = "unknown",
+    map_data = {},
+    data_file = "osnova_gh_locations.txt",
+
+    settings = {
+        key = 0, mode = 1, active = false, toggled = false,
+        smooth = 50, reaction = 100, fov = 160,
+        save_key = 0, auto_key = 0, delete_key = 0
+    },
+
+    -- Feature filter: controls which parts of the helper are allowed to work.
+    features = {
+        smoke = true, he = true, flash = true,
+        molotov = true, decoy = true,
+        movement = true
+    },
+
+    visual_features = {
+        through_walls = false
+    },
+
+    -- === NEW: Grenade Groups (instead of folders) ===
+    groups = {
+        [45] = { name = "Smoke", short = "SMOKE", locations = {} },
+        [44] = { name = "HE Grenade", short = "HE", locations = {} },
+        -- Molotov group is used for BOTH T-side Molotov (46) and CT Incendiary (48)
+        [46] = { name = "Molotov / Incendiary", short = "MOLOT", locations = {} },
+        [43] = { name = "Flashbang", short = "FLASH", locations = {} },
+        [47] = { name = "Decoy", short = "DECOY", locations = {} },
+    },
+    selected_group = 45,        -- default: Smoke
+    -- Which upper-left browser list owns the current selection.
+    -- "group" = grenade groups selected, "movement" = Movement Helper selected.
+    selected_browser = "group",
+    group_scroll = 0,
+
+    -- === Movement Helper groups ===
+    -- Movement Helper is planned as "grenade auto-record" logic, but without
+    -- grenade throw playback. For now only Knife exists as a placeholder group.
+    movement_helpers = {
+        [1] = { name = "Knife", short = "KNIFE", locations = {} },
+    },
+    selected_movement_helper = 1,
+    movement_scroll = 0,
+
+    -- old fields kept for minimal breakage
+    folders = {},               -- deprecated
+    selected_folder = 0,
+
+    current_locations = {},     -- will be dynamically resolved
+    selected_location = 0,
+    location_scroll = 0,
+
+    active_slider = nil, active_combo = nil, binding = false, bind_target = nil,
+    renaming = false, rename_target = "location", rename_buf = "", popup = { open = false, x = 0, y = 0 },
+    anims = {},
+    clr = { bg = {10, 10, 10, 255}, header = {15, 15, 15, 255}, accent = {255, 255, 255, 255}, outline = {35, 35, 35, 255}, text = {255, 255, 255, 255}, text_dim = {120, 120, 120, 255} }
+}
+
+
+-- ==================== MAP-SPECIFIC LOCATION STORAGE ====================
+local function osnova_canon_def_early(def)
+    if def == 48 then return 46 end
+    return def
+end
+
+local function osnova_normalize_map_name(map)
+    map = tostring(map or "unknown")
+    map = map:gsub("\\", "/")
+    map = map:match("([^/]+)$") or map
+    map = map:gsub("%.bsp$", "")
+    map = map:gsub("%.vpk$", "")
+    return map
+end
+
+local function osnova_get_map_name()
+    local map = nil
+    local tries = {
+        function() return engine and engine.GetMapName and engine.GetMapName() end,
+        function() return engine and engine.GetLevelName and engine.GetLevelName() end,
+        function() return client and client.GetMapName and client.GetMapName() end,
+        function() return globals and globals.MapName and globals.MapName() end,
+    }
+    for _, fn in ipairs(tries) do
+        local ok, v = pcall(fn)
+        if ok and v and tostring(v) ~= "" then map = tostring(v); break end
+    end
+    return osnova_normalize_map_name(map or "unknown")
+end
+
+local function osnova_empty_map_data()
+    return {
+        groups = {
+            [45] = { locations = {} }, [44] = { locations = {} },
+            [46] = { locations = {} }, [43] = { locations = {} },
+            [47] = { locations = {} },
+        },
+        movement_helpers = { [1] = { locations = {} } }
+    }
+end
+
+local function osnova_ensure_map_data(map)
+    map = map or osnova_get_map_name()
+    ui.map_data[map] = ui.map_data[map] or osnova_empty_map_data()
+    local md = ui.map_data[map]
+    md.groups = md.groups or {}
+    md.movement_helpers = md.movement_helpers or {}
+    for def, _ in pairs(ui.groups) do
+        local cdef = osnova_canon_def_early(def)
+        md.groups[cdef] = md.groups[cdef] or { locations = {} }
+        md.groups[cdef].locations = md.groups[cdef].locations or {}
+    end
+    for id, _ in pairs(ui.movement_helpers) do
+        md.movement_helpers[id] = md.movement_helpers[id] or { locations = {} }
+        md.movement_helpers[id].locations = md.movement_helpers[id].locations or {}
+    end
+    return md
+end
+
+local function osnova_update_current_map()
+    local map = osnova_get_map_name()
+    if ui.current_map ~= map then
+        ui.current_map = map
+        ui.selected_location = 0
+        ui.location_scroll = 0
+    end
+    osnova_ensure_map_data(map)
+    return map
+end
+
+local function osnova_get_locations_for(map, browser, id)
+    local md = osnova_ensure_map_data(map)
+    if browser == "movement" then
+        local mh = md.movement_helpers[id or ui.selected_movement_helper]
+        return (mh and mh.locations) or {}
+    end
+    local def = osnova_canon_def_early(id or ui.selected_group)
+    local grp = md.groups[def]
+    return (grp and grp.locations) or {}
+end
+
+local function osnova_count_locations(locs)
+    local n = 0
+    for _, loc in pairs(locs or {}) do
+        if type(loc) == "table" then n = n + 1 end
+    end
+    return n
+end
+
+local function osnova_debug(msg)
+    -- Load/render diagnostics. Kept as print only here because user asked to
+    -- debug why saved locations are not showing after Lua reload.
+    pcall(function() print("[OSNOVA GH DEBUG] " .. tostring(msg)) end)
+end
+
+local function osnova_debug_database_summary(reason)
+    local total = 0
+    osnova_debug("database " .. tostring(reason) .. ", current_map=" .. tostring(ui.current_map))
+    for map, md in pairs(ui.map_data or {}) do
+        local map_total = 0
+        if md.groups then
+            for def, grp in pairs(md.groups) do
+                local c = osnova_count_locations((grp or {}).locations)
+                if c > 0 then
+                    osnova_debug("  map=" .. tostring(map) .. " group=" .. tostring(def) .. " locations=" .. tostring(c))
+                end
+                map_total = map_total + c
+            end
+        end
+        if md.movement_helpers then
+            for id, mh in pairs(md.movement_helpers) do
+                local c = osnova_count_locations((mh or {}).locations)
+                if c > 0 then
+                    osnova_debug("  map=" .. tostring(map) .. " movement=" .. tostring(id) .. " locations=" .. tostring(c))
+                end
+                map_total = map_total + c
+            end
+        end
+        total = total + map_total
+    end
+    osnova_debug("total locations=" .. tostring(total))
+end
+
+local function osnova_count_locations_for_current_view(browser, id)
+    if ui.show_all_maps then
+        local n = 0
+        for map, _ in pairs(ui.map_data) do
+            n = n + osnova_count_locations(osnova_get_locations_for(map, browser, id))
+        end
+        return n
+    end
+    return osnova_count_locations(osnova_get_locations_for(ui.current_map, browser, id))
+end
+
+local function osnova_encode_lua_string(str)
+    -- ASCII-only string encoding for the database file.
+    -- This avoids UTF-8 / Windows-1251 text encoding issues in Aimware's file API.
+    -- Every byte is stored as \DDD, so Cyrillic names and other symbols cannot
+    -- break loadstring() or truncate / corrupt every other location.
+    str = tostring(str or "")
+    local out = { '"' }
+    for i = 1, string.len(str) do
+        table.insert(out, string.format("\\%03d", string.byte(str, i)))
+    end
+    table.insert(out, '"')
+    return table.concat(out)
+end
+
+local function osnova_serialize_value(v, indent)
+    indent = indent or 0
+    local t = type(v)
+    if t == "number" or t == "boolean" then return tostring(v) end
+    if t == "string" then return osnova_encode_lua_string(v) end
+    if t ~= "table" then return "nil" end
+    local pad = string.rep(" ", indent)
+    local out = { "{\n" }
+    for k, val in pairs(v) do
+        local key = type(k) == "number" and ("[" .. k .. "]") or ("[" .. osnova_encode_lua_string(tostring(k)) .. "]")
+        table.insert(out, pad .. "  " .. key .. " = " .. osnova_serialize_value(val, indent + 2) .. ",\n")
+    end
+    table.insert(out, pad .. "}")
+    return table.concat(out)
+end
+
+local function osnova_location_has_position(loc)
+    return type(loc) == "table"
+        and type(loc.pos_x) == "number"
+        and type(loc.pos_y) == "number"
+        and type(loc.pos_z) == "number"
+end
+
+local function osnova_compact_locations(locs, context)
+    local compact, removed = {}, 0
+    for _, loc in pairs(locs or {}) do
+        if osnova_location_has_position(loc) then
+            table.insert(compact, loc)
+        else
+            removed = removed + 1
+            osnova_debug("removed invalid saved location" .. (context and (" (" .. context .. ")") or "") .. ": " .. tostring(loc and loc.name or "nil"))
+        end
+    end
+    return compact, removed
+end
+
+local function osnova_sanitize_database()
+    for map, md in pairs(ui.map_data or {}) do
+        if type(md) == "table" then
+            if md.groups then
+                for def, grp in pairs(md.groups) do
+                    if type(grp) == "table" then
+                        grp.locations = osnova_compact_locations(grp.locations, tostring(map) .. "/group " .. tostring(def))
+                    end
+                end
+            end
+            if md.movement_helpers then
+                for id, mh in pairs(md.movement_helpers) do
+                    if type(mh) == "table" then
+                        mh.locations = osnova_compact_locations(mh.locations, tostring(map) .. "/movement " .. tostring(id))
+                    end
+                end
+            end
+        end
+    end
+end
+
+local function osnova_merge_loaded_maps()
+    local merged = {}
+    for map, md in pairs(ui.map_data or {}) do
+        local norm = osnova_normalize_map_name(map)
+        merged[norm] = merged[norm] or osnova_empty_map_data()
+        local dst = merged[norm]
+        if type(md) == "table" then
+            if md.groups then
+                for def, grp in pairs(md.groups) do
+                    local cdef = osnova_canon_def_early(def)
+                    dst.groups[cdef] = dst.groups[cdef] or { locations = {} }
+                    for _, loc in pairs((grp or {}).locations or {}) do
+                        table.insert(dst.groups[cdef].locations, loc)
+                    end
+                end
+            end
+            if md.movement_helpers then
+                for id, mh in pairs(md.movement_helpers) do
+                    dst.movement_helpers[id] = dst.movement_helpers[id] or { locations = {} }
+                    for _, loc in pairs((mh or {}).locations or {}) do
+                        table.insert(dst.movement_helpers[id].locations, loc)
+                    end
+                end
+            end
+        end
+    end
+    ui.map_data = merged
+end
+
+local function osnova_save_database()
+    osnova_sanitize_database()
+    pcall(function() file.Write(ui.data_file, "return " .. osnova_serialize_value(ui.map_data)) end)
+end
+
+local function osnova_load_database()
+    local ok, data = pcall(function() return file.Read(ui.data_file) end)
+    if not ok then
+        osnova_debug("file.Read failed for " .. tostring(ui.data_file) .. ": " .. tostring(data))
+    elseif not data or data == "" then
+        osnova_debug("database file empty/missing: " .. tostring(ui.data_file))
+    else
+        osnova_debug("read " .. tostring(string.len(data)) .. " bytes from " .. tostring(ui.data_file))
+        local loader = loadstring or load
+        local ok_load, loaded = pcall(function()
+            local fn, compile_err = loader(data)
+            if not fn then return nil, compile_err end
+            return fn()
+        end)
+        if ok_load and type(loaded) == "table" then
+            ui.map_data = loaded
+            osnova_debug("database lua parse OK")
+        else
+            osnova_debug("database lua parse FAILED: " .. tostring(loaded))
+        end
+    end
+    osnova_merge_loaded_maps()
+    osnova_sanitize_database()
+    osnova_update_current_map()
+    local md = osnova_ensure_map_data(ui.current_map)
+    for def, grp in pairs(ui.groups) do
+        local cdef = osnova_canon_def_early(def)
+        if grp.locations and #grp.locations > 0 and osnova_count_locations(md.groups[cdef].locations) == 0 then md.groups[cdef].locations = grp.locations end
+    end
+    for id, mh in pairs(ui.movement_helpers) do
+        if mh.locations and #mh.locations > 0 and osnova_count_locations(md.movement_helpers[id].locations) == 0 then md.movement_helpers[id].locations = mh.locations end
+    end
+    osnova_debug_database_summary("loaded")
+    osnova_save_database()
+end
+
+osnova_load_database()
+
+-- Helper: get current locations from the active left browser selection.
+-- If the top list owns selection -> grenade group locations.
+-- If the bottom list owns selection -> Movement Helper locations.
+local function get_current_locations()
+    osnova_update_current_map()
+    if ui.selected_browser == "movement" then
+        if ui.features and ui.features.movement == false then return {} end
+        return osnova_get_locations_for(ui.current_map, "movement", ui.selected_movement_helper)
+    end
+    return osnova_get_locations_for(ui.current_map, "group", ui.selected_group)
+end
+
+-- Helper: set current locations (used when creating/deleting)
+local function set_current_locations(new_locs)
+    osnova_update_current_map()
+    local md = osnova_ensure_map_data(ui.current_map)
+    if ui.selected_browser == "movement" then
+        local mh = md.movement_helpers[ui.selected_movement_helper]
+        if mh then mh.locations = new_locs or {} end
+    else
+        local def = osnova_canon_def_early(ui.selected_group)
+        local g = md.groups[def]
+        if g then g.locations = new_locs or {} end
+    end
+    osnova_save_database()
+end
+
+-- Update current_locations reference (for compatibility in some places)
+local function sync_current_locations()
+    ui.current_locations = get_current_locations()
+end
+
+local keys = {[0]="None",[1]="M1",[2]="M2",[3]="M3",[4]="M3",[5]="M4",[6]="M5",[9]="TAB",[13]="ENT",[16]="SHFT",[17]="CTRL",[18]="ALT",[20]="CAPS",[27]="ESC",[32]="SPC",[37]="LFT",[38]="UP",[39]="RGT",[40]="DWN",[45]="INS",[46]="DEL",[72]="INS",[8]="BKS"}
+for i=65,90 do keys[i]=string.char(i) end
+for i=48,57 do keys[i]=string.char(i) end
+for i=112,123 do keys[i]="F"..(i-111) end
+
+local f_title = draw.CreateFont("Segoe UI", 15, 700, false, true)
+local f_tabs = draw.CreateFont("Segoe UI Semibold", 12, 600, false, true)
+local f_main = draw.CreateFont("Segoe UI", 12, 400, false, true)
+local f_group = draw.CreateFont("Segoe UI Semibold", 11, 700, false, true)
+local f_bind = draw.CreateFont("Segoe UI", 10, 400, false, true)
+local f_location = draw.CreateFont("Segoe UI", 11, 400, false, true)
+local f_distance = draw.CreateFont("Segoe UI", 10, 400, false, true)
+
+local function mouse_in(x, y, w, h)
+    local mx, my = input.GetMousePos()
+    return mx >= x and mx <= x + w and my >= y and my <= y + h
+end
+
+local function lerp(a, b, t) return a + (b - a) * t end
+
+-- Angle (deg) within which we consider the crosshair "on" the aim point.
+-- Kept tight so the throw / macro only fires when the crosshair is
+-- essentially dead-centre on the aim point (no noticeable offset).
+local AIM_LOCK_ANGLE_DEG = 0.6
+
+-- Aim / selection FOV, measured in SCREEN PIXELS as a radius around the
+-- crosshair (screen centre). A saved location only becomes a candidate to
+-- auto-aim / auto-walk / play back when its AIM POINT projects within this
+-- many pixels of the crosshair. Among candidates the one closest to the
+-- crosshair wins. This replaces the old "nearest ground spot / most recently
+-- created" selection logic.
+local AIM_FOV_PX = 160
+
+local function osnova_angle_diff(a, b)
+    local d = b - a
+    while d > 180 do d = d - 360 end
+    while d < -180 do d = d + 360 end
+    return d
+end
+
+local function osnova_is_aimed_at(origin, target_vec)
+    local view = nil
+    pcall(function() view = engine.GetViewAngles() end)
+    if not view then
+        local lp = entities.GetLocalPlayer()
+        if lp then pcall(function() view = lp:GetAbsAngles() end) end
+    end
+    if not view then return false end
+
+    local eye = Vector3(origin.x, origin.y, origin.z + 64)
+    local dir = target_vec - eye
+    local target_angles = dir:Angles()
+
+    local cur_pitch = view.pitch or view.x or 0
+    local cur_yaw = view.yaw or view.y or 0
+    local tgt_pitch = target_angles.pitch or target_angles.x or 0
+    local tgt_yaw = target_angles.yaw or target_angles.y or 0
+
+    local dpitch = osnova_angle_diff(cur_pitch, tgt_pitch)
+    local dyaw = osnova_angle_diff(cur_yaw, tgt_yaw)
+    local angle_dist = math.sqrt(dpitch * dpitch + dyaw * dyaw)
+
+    return angle_dist <= AIM_LOCK_ANGLE_DEG, angle_dist
+end
+
+-- Weapon / grenade detection (unchanged)
+local function osnova_is_holding_grenade()
+    local lp = entities.GetLocalPlayer()
+    if not lp or not lp:IsAlive() then return false end
+    local wt = -1
+    local ok = pcall(function() wt = lp:GetWeaponType() end)
+    if ok and wt == 9 then return true end
+    return false
+end
+
+local GRENADE_DEF_NAME = {
+    [43] = "Flashbang",
+    [44] = "HE Grenade",
+    [45] = "Smoke",
+    [46] = "Molotov",
+    [47] = "Decoy",
+    [48] = "Incendiary",
+}
+
+local NADE_SHORT = { [43]="FLASH", [44]="HE", [45]="SMOKE", [46]="MOLOT", [48]="MOLOT" }
+
+-- Knife item definition indexes. 42/59 are default knives; 500+ are knife skins.
+-- Used for Movement Helper auto-switch: when a knife is held, select Knife in
+-- the lower Movement Helper list, just like grenades auto-select their group.
+local KNIFE_DEFS = { [42] = true, [59] = true }
+local function osnova_is_knife_def(def)
+    return def ~= nil and (KNIFE_DEFS[def] or (def >= 500 and def <= 526))
+end
+
+local GRENADE_FEATURE_KEYS = {
+    [45] = "smoke",
+    [44] = "he",
+    [43] = "flash",
+    [46] = "molotov",
+    [48] = "molotov",
+    [47] = "decoy",
+}
+
+local function osnova_canonical_grenade_def(def)
+    -- Incendiary is CT molotov, so store/use it in the Molotov group.
+    if def == 48 then return 46 end
+    return def
+end
+
+local function osnova_grenade_feature_enabled(def)
+    def = osnova_canonical_grenade_def(def)
+    if not ui.features then return true end
+    local key = GRENADE_FEATURE_KEYS[def]
+    if not key then return true end
+    return ui.features[key] ~= false
+end
+
+local function osnova_movement_feature_enabled()
+    return (not ui.features) or ui.features.movement ~= false
+end
+
+local WD = { off = { dwEntityList = 38696576, dwLocalPlayerController = 36832624, m_hPlayerPawn = 2316, m_pWeaponServices = 4576, m_hActiveWeapon = 96, m_AttributeManager = 4480, m_Item = 80, m_iItemDefinitionIndex = 442 }, ready = false, tried = false }
+
+local function wd_setup()
+    if WD.tried then return end
+    WD.tried = true
+    local ffi = rawget(_G, "ffi")
+    if type(ffi) ~= "table" then return end
+    WD.ffi = ffi
+    pcall(function() ffi.cdef[[ ]] end)
+    local function r_ptr(a)
+        local ok, v = pcall(function() return tonumber(ffi.cast("uint64_t*", a)[0]) end)
+        return ok and v or nil
+    end
+    local function r_u16(a)
+        local ok, v = pcall(function() return tonumber(ffi.cast("uint16_t*", a)[0]) end)
+        return ok and v or nil
+    end
+    local function r_u32(a)
+        local ok, v = pcall(function() return tonumber(ffi.cast("uint32_t*", a)[0]) end)
+        return ok and v or nil
+    end
+    local function valid(p) return p ~= nil and p > 0x10000 and p < 0x7FFFFFFFFFFF end
+    WD.r_ptr, WD.r_u16, WD.r_u32, WD.valid = r_ptr, r_u16, r_u32, valid
+    WD.ready = true
+end
+
+local function wd_handle_to_entity(elist, hnd)
+    local band, rshift = bit.band, bit.rshift
+    if not (WD.valid(elist) and hnd and hnd ~= 0 and hnd ~= 0xFFFFFFFF) then return nil end
+    local idx = band(hnd, 0x7FFF)
+    local chunk = WD.r_ptr(elist + 8 * rshift(idx, 9) + 16)
+    if not WD.valid(chunk) then return nil end
+    local e = WD.r_ptr(chunk + 112 * band(idx, 0x1FF))
+    if WD.valid(e) and WD.valid(WD.r_ptr(e)) then return e end
+    return nil
+end
+
+local function osnova_active_weapon_def()
+    local api = rawget(_G, "AWCHANGER_API")
+    if api and api.activeDef then
+        local ok, def = pcall(api.activeDef)
+        if ok and def and def >= 43 and def <= 48 then return def end
+    end
+
+    wd_setup()
+    if not WD.ready then return nil end
+
+    local base = mem.GetModuleBase("client.dll")
+    if not base then return nil end
+    local ctrl = WD.r_ptr(base + WD.off.dwLocalPlayerController)
+    if not WD.valid(ctrl) then return nil end
+    local elist = WD.r_ptr(base + WD.off.dwEntityList)
+    if not WD.valid(elist) then return nil end
+    local pawn_handle = WD.r_u32(ctrl + WD.off.m_hPlayerPawn)
+    local pawn = wd_handle_to_entity(elist, pawn_handle)
+    if not WD.valid(pawn) then return nil end
+    local ws = WD.r_ptr(pawn + WD.off.m_pWeaponServices)
+    if not WD.valid(ws) then return nil end
+    local wpn = wd_handle_to_entity(elist, WD.r_u32(ws + WD.off.m_hActiveWeapon))
+    if not wpn then return nil end
+    local item = wpn + WD.off.m_AttributeManager + WD.off.m_Item
+    return WD.r_u16(item + WD.off.m_iItemDefinitionIndex)
+end
+
+local WD_CACHE = { t = -1, def = nil }
+local function osnova_active_grenade_def()
+    if not osnova_is_holding_grenade() then WD_CACHE.def = nil; return nil end
+    local now = common.Time()
+    if now == WD_CACHE.t then return WD_CACHE.def end
+    WD_CACHE.t = now
+    local ok, def = pcall(osnova_active_weapon_def)
+    WD_CACHE.def = ok and def or nil
+    return WD_CACHE.def
+end
+
+local MH_CACHE = { t = -1, id = nil }
+local function osnova_active_movement_helper_id()
+    -- Currently Movement Helper has only Knife. Later this can be expanded to
+    -- Zeus / bomb / other weapon movement categories without changing the UI.
+    local now = common.Time()
+    if now == MH_CACHE.t then return MH_CACHE.id end
+    MH_CACHE.t = now
+    MH_CACHE.id = nil
+
+    local ok, def = pcall(osnova_active_weapon_def)
+    if ok and osnova_is_knife_def(def) then
+        MH_CACHE.id = 1 -- Knife
+    end
+
+    return MH_CACHE.id
+end
+
+local function osnova_grenade_name()
+    local def = osnova_active_grenade_def()
+    if def then
+        local name = NADE_SHORT[def]
+        if name then return name end
+        return "#" .. tostring(def)
+    end
+    return "GRENADE"
+end
+
+-- Gameplay must follow the weapon currently in hands, not the UI list the user
+-- clicked. This lets you freely browse tabs while the helper still walks/aims/
+-- throws for the held grenade or knife.
+local function osnova_get_action_context()
+    osnova_update_current_map()
+
+    local grenade_def = osnova_canonical_grenade_def(osnova_active_grenade_def())
+    if grenade_def and ui.groups[grenade_def] and osnova_grenade_feature_enabled(grenade_def) then
+        return "group", grenade_def
+    end
+
+    local helper_id = osnova_active_movement_helper_id()
+    if helper_id and ui.movement_helpers[helper_id] and osnova_movement_feature_enabled() then
+        return "movement", helper_id
+    end
+
+    return nil, nil
+end
+
+local function osnova_get_action_locations()
+    local browser, id = osnova_get_action_context()
+    if not browser then return {}, nil, nil end
+    return osnova_get_locations_for(ui.current_map, browser, id), browser, id
+end
+
+local last_render_time = common.Time()
+
+local function osnova_position_visible(player_origin, world_vec)
+    local from = Vector3(player_origin.x, player_origin.y, player_origin.z + 64)
+    local tr = nil
+    local ok = pcall(function() tr = engine.TraceLine(from, world_vec) end)
+    if not ok or not tr then return true end
+    if tr.fraction and tr.fraction > 0.97 then return true end
+    return false
+end
+
+-- 6 trace samples around a saved location. This gives a pseudo-chams style
+-- visibility percent: 1.0 = fully visible, 0.0 = fully behind wall, values in
+-- between = partially visible. We still draw 2D overlay, so this cannot cut the
+-- marker by real map geometry, but it can make partial/hidden spots behave smart.
+local VIS_SAMPLE_OFFSETS = {
+    { 0, 0, 0 },
+    { 0, 0, 42 },
+    { 18, 0, 18 },
+    { -18, 0, 18 },
+    { 0, 18, 18 },
+    { 0, -18, 18 },
+}
+
+local function osnova_location_visibility_fraction(player_origin, loc)
+    if not (loc and loc.pos_x and loc.pos_y and loc.pos_z) then return 0 end
+
+    local visible = 0
+    local total = #VIS_SAMPLE_OFFSETS
+
+    for _, o in ipairs(VIS_SAMPLE_OFFSETS) do
+        local sample = Vector3(loc.pos_x + o[1], loc.pos_y + o[2], loc.pos_z + o[3])
+        if osnova_position_visible(player_origin, sample) then
+            visible = visible + 1
+        end
+    end
+
+    return visible / total
+end
+
+-- World-space rendering: locations are clustered on-screen into single boxes,
+-- and each qualifying location draws its own aim-point marker.
+-- Draw the aim-point marker for a single location (used by clustered rendering)
+local function osnova_draw_aim_point(it, player_origin, dt, pulse)
+    local loc = it.loc
+    local alpha = it.alpha
+    local screen_x, screen_y = it.screen_x, it.screen_y
+    local is_target = it.is_target
+
+    local aim_vec = Vector3(loc.aim_x, loc.aim_y, loc.aim_z)
+    local aim_sx, aim_sy = client.WorldToScreen(aim_vec)
+
+    if not aim_sx or not aim_sy then
+        local px, py, pz = loc.pos_x, loc.pos_y, loc.pos_z
+        if px and py and pz then
+            local ddx = loc.aim_x - px
+            local ddy = loc.aim_y - py
+            local ddz = loc.aim_z - (pz + 64)
+            local ddlen = math.sqrt(ddx*ddx + ddy*ddy + ddz*ddz)
+            if ddlen > 0.1 then
+                local near_x = px + ddx * 50 / ddlen
+                local near_y = py + ddy * 50 / ddlen
+                local near_z = pz + 64 + ddz * 50 / ddlen
+                local nx, ny = client.WorldToScreen(Vector3(near_x, near_y, near_z))
+                if nx and ny then
+                    local lsx, lsy = screen_x, screen_y
+                    if not lsx or not lsy then
+                        local sw, sh = draw.GetScreenSize()
+                        lsx, lsy = sw * 0.5, sh * 0.85
+                    end
+                    local sdx, sdy = nx - lsx, ny - lsy
+                    local smag = math.sqrt(sdx*sdx + sdy*sdy)
+                    if smag > 0.1 then
+                        local sw, sh = draw.GetScreenSize()
+                        local mul = (sw + sh) / smag
+                        aim_sx = lsx + sdx * mul
+                        aim_sy = lsy + sdy * mul
+                    end
+                end
+            end
+        end
+    end
+
+    if aim_sx and aim_sy then
+        local is_aimed = osnova_is_aimed_at(player_origin, aim_vec)
+
+        if loc.aim_anim == nil then loc.aim_anim = 0 end
+        local anim_speed = 8
+        if is_aimed then
+            loc.aim_anim = math.min(1, loc.aim_anim + dt * anim_speed)
+        else
+            loc.aim_anim = math.max(0, loc.aim_anim - dt * anim_speed)
+        end
+        local t = loc.aim_anim
+
+        local col_r = lerp(255, 100, t)
+        local col_g = 255
+        local col_b = lerp(255, 100, t)
+
+        -- the FOV-selected target is drawn a touch bigger so it reads as
+        -- the one being aimed at, without any special (yellow) colour
+        local ar = 5 + t * 1 + (is_target and 3 or 0)
+        local pulse_r = ar + 2 + pulse * 2 * t
+
+        draw.Color(col_r, col_g, col_b, alpha * (0.05 + 0.05 * t))
+        draw.OutlinedCircle(aim_sx, aim_sy, pulse_r + 6)
+        draw.Color(col_r, col_g, col_b, alpha * (0.08 + 0.08 * t))
+        draw.OutlinedCircle(aim_sx, aim_sy, pulse_r + 3)
+
+        draw.Color(col_r, col_g, col_b, alpha * 0.9)
+        draw.FilledCircle(aim_sx, aim_sy, ar)
+        draw.Color(col_r, col_g, col_b, alpha * 0.5)
+        draw.OutlinedCircle(aim_sx, aim_sy, ar + 2)
+        draw.Color(col_r, col_g, col_b, alpha * 0.3)
+        draw.OutlinedCircle(aim_sx, aim_sy, ar + 3)
+        draw.Color(col_r, col_g, col_b, alpha * 0.15)
+        draw.OutlinedCircle(aim_sx, aim_sy, ar + 4)
+
+        draw.Color(255, 255, 255, alpha * (0.5 + 0.3 * t))
+        draw.FilledCircle(aim_sx, aim_sy, ar * 0.4)
+
+        local aim_label = loc.name or "Location"
+        draw.SetFont(f_distance)
+        local ltw, lth = draw.GetTextSize(aim_label)
+
+        local pad_x = 10
+        local pad_y = 5
+        local accent_w = 3
+        local box_gap = ar + 8
+        local box_x1 = aim_sx + box_gap
+        local box_y1 = aim_sy - (lth + pad_y * 2) / 2
+        local box_x2 = box_x1 + accent_w + pad_x * 2 + ltw
+        local box_y2 = box_y1 + lth + pad_y * 2
+        local box_r = 4
+
+        draw.Color(0, 0, 0, alpha * 0.35)
+        draw.ShadowRect(box_x1, box_y1, box_x2, box_y2, 10)
+
+        draw.Color(12, 12, 12, alpha * 0.88)
+        draw.RoundedRectFill(box_x1, box_y1, box_x2, box_y2, box_r, box_r, box_r, box_r, box_r)
+
+        draw.Color(col_r, col_g, col_b, alpha * 0.6)
+        draw.RoundedRect(box_x1, box_y1, box_x2, box_y2, box_r, box_r, box_r, box_r, box_r)
+
+        draw.Color(col_r, col_g, col_b, alpha * 0.9)
+        draw.RoundedRectFill(box_x1 + 2, box_y1 + 2, box_x1 + 2 + accent_w, box_y2 - 2, 2, 2, 0, 2, 0)
+
+        draw.Color(255, 255, 255, alpha * (0.85 + 0.15 * t))
+        draw.Text(box_x1 + accent_w + pad_x, box_y1 + pad_y, aim_label)
+    end
+end
+
+-- World-space cluster radius: locations whose ground positions are within
+-- this many units are merged into one box. Keep it tight: spots should only
+-- merge when they are basically the same place.
+local CLUSTER_WORLD_RADIUS = 30
+local LOCATION_MAX_RENDER_DISTANCE = 450
+local LOCATION_BOX_SHRINK_START = 250
+local LOCATION_FADE_START_DISTANCE = 350
+
+-- Updated: cluster nearby on-screen locations into ONE vertical box
+-- Screen (crosshair) centre in pixels.
+local function osnova_screen_center()
+    local w, h = 0, 0
+    pcall(function() w, h = draw.GetScreenSize() end)
+    if w <= 0 or h <= 0 then w, h = 1920, 1080 end
+    return w / 2, h / 2
+end
+
+-- FOV-based target selection -- the single source of truth for "which spot
+-- am I aiming at". Walks the current active list's saved locations and returns
+-- the ONE whose AIM POINT projects closest to the crosshair while still
+-- inside the FOV cone (AIM_FOV_PX pixels around screen centre).
+-- Grenade mode requires a grenade in hand; Movement Helper mode uses the
+-- selected Movement Helper group (Knife for now) and does not require a grenade.
+local function osnova_select_target(origin, fov_px)
+    fov_px = fov_px or (ui.settings and ui.settings.fov) or AIM_FOV_PX
+
+    local locs = osnova_get_action_locations()
+    if not locs or #locs == 0 then return nil end
+
+    local cx, cy = osnova_screen_center()
+
+    local best, best_d = nil, nil
+    for _, loc in pairs(locs) do
+        if loc.aim_x and loc.aim_y and loc.aim_z then
+            local sx, sy = client.WorldToScreen(Vector3(loc.aim_x, loc.aim_y, loc.aim_z))
+            if sx and sy then
+                local d = math.sqrt((sx - cx) ^ 2 + (sy - cy) ^ 2)
+                if d <= fov_px and (not best_d or d < best_d) then
+                    best, best_d = loc, d
+                end
+            end
+        end
+    end
+    return best
+end
+
+local function render_world_locations()
+    if not ui.show_locations then return end
+
+    local held_def = osnova_canonical_grenade_def(osnova_active_grenade_def())
+
+    local local_player = entities.GetLocalPlayer()
+    if not local_player or not local_player:IsAlive() then return end
+
+    local player_origin = local_player:GetAbsOrigin()
+
+    local now = common.Time()
+    local dt = now - last_render_time
+    if dt < 0 or dt > 0.5 then dt = 0 end
+    last_render_time = now
+    local pulse = (math.sin(now * 4) + 1) * 0.5
+
+    -- AIM POINTS FIRST: drawn per-location for the selected group when the
+    -- player is standing on/near the spot. Done up here (before the ground
+    -- marker clustering below) so the reticle + its name box never vanish when
+    -- you stand exactly on the location's ground point -- there the ground
+    -- marker projects off-screen and would otherwise trip the early return and
+    -- skip ALL rendering for this location.
+    -- highlight the FOV-selected location so the player can see which spot
+    -- is currently armed (the one inside the FOV cone, closest to centre)
+    local fov_target = osnova_select_target(player_origin)
+
+    local function draw_near_aim_for_locs(locs)
+        for _, loc in pairs(locs) do
+            if loc.aim_x and loc.aim_y and loc.aim_z and loc.pos_x and loc.pos_y and loc.pos_z then
+                local pdx = player_origin.x - loc.pos_x
+                local pdy = player_origin.y - loc.pos_y
+                if math.sqrt(pdx * pdx + pdy * pdy) < 15 then
+                    local msx, msy = client.WorldToScreen(Vector3(loc.pos_x, loc.pos_y, loc.pos_z))
+                    osnova_draw_aim_point({ loc = loc, alpha = 255, screen_x = msx, screen_y = msy, is_nearby = true, is_target = (loc == fov_target) }, player_origin, dt, pulse)
+                end
+            end
+        end
+    end
+
+    if ui.selected_browser == "movement" then
+        draw_near_aim_for_locs(osnova_get_locations_for(ui.current_map, "movement", ui.selected_movement_helper))
+    else
+        -- Draw aim points for every grenade group on current map. After reload this
+        -- prevents saved aim points from disappearing just because the UI defaulted
+        -- to Smoke while the saved point belongs to another grenade group.
+        for def, _ in pairs(ui.groups) do
+            local cdef = osnova_canon_def_early(def)
+            if osnova_grenade_feature_enabled(cdef) then
+                draw_near_aim_for_locs(osnova_get_locations_for(ui.current_map, "group", cdef))
+            end
+        end
+    end
+
+    -- 1) collect every renderable location with its screen position
+    local items = {}
+
+    ui.render_skip_logged = ui.render_skip_logged or {}
+    local function log_render_skip(loc, reason)
+        local key = tostring(loc) .. ":" .. tostring(reason)
+        if not ui.render_skip_logged[key] then
+            ui.render_skip_logged[key] = true
+            osnova_debug("render skip '" .. tostring(loc and loc.name or "?") .. "': " .. tostring(reason))
+        end
+    end
+
+    local function add_renderable_location(loc, idx, is_selected)
+        if loc.pos_x and loc.pos_y and loc.pos_z then
+            local dx = loc.pos_x - player_origin.x
+            local dy = loc.pos_y - player_origin.y
+            local dz = loc.pos_z - player_origin.z
+            local dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+            if dist > LOCATION_MAX_RENDER_DISTANCE then log_render_skip(loc, "too far " .. tostring(math.floor(dist)) .. ">" .. tostring(LOCATION_MAX_RENDER_DISTANCE)); return end
+
+            local alpha = 255
+            -- Smooth distance fade before the hard max range, so locations do not
+            -- pop out instantly at 450 units. From 350 -> 450 alpha fades 100% -> 0%.
+            if dist > LOCATION_FADE_START_DISTANCE then
+                local fade = 1 - ((dist - LOCATION_FADE_START_DISTANCE) / (LOCATION_MAX_RENDER_DISTANCE - LOCATION_FADE_START_DISTANCE))
+                if fade < 0 then fade = 0 elseif fade > 1 then fade = 1 end
+                alpha = alpha * fade
+            end
+
+            local player_dist_2d = math.sqrt(
+                (player_origin.x - loc.pos_x) ^ 2 + (player_origin.y - loc.pos_y) ^ 2
+            )
+            local is_nearby = player_dist_2d < 15
+
+            local world_vec = Vector3(loc.pos_x, loc.pos_y, loc.pos_z)
+            local screen_x, screen_y = client.WorldToScreen(world_vec)
+
+            local through_walls = ui.visual_features and ui.visual_features.through_walls
+            local center_visible = osnova_position_visible(player_origin, world_vec)
+            local vis_fraction = osnova_location_visibility_fraction(player_origin, loc) -- 6 samples
+            local is_visible = center_visible
+
+            if through_walls then
+                local wall_radius = 250
+
+                if vis_fraction >= 0.99 then
+                    -- fully visible: no transparency
+                    is_visible = true
+                elseif dist <= wall_radius then
+                    -- Old through-wall behaviour: hidden/partial location is shown in
+                    -- radius and fades by distance. 6 highlight samples additionally
+                    -- affect alpha, so partially visible spots are clearer than fully
+                    -- hidden ones.
+                    local closeness = 1 - (dist / wall_radius)
+                    if closeness < 0 then closeness = 0 elseif closeness > 1 then closeness = 1 end
+
+                    local visibility_factor = vis_fraction
+                    if closeness > visibility_factor then visibility_factor = closeness end
+
+                    -- Minimum alpha is 25% (75% transparent), max is 100%.
+                    local alpha_mul = 0.25 + 0.75 * visibility_factor
+                    alpha = alpha * alpha_mul
+                    is_visible = true
+                elseif vis_fraction > 0 then
+                    -- Outside through-wall radius: only truly visible sampled parts keep
+                    -- the marker alive, using the 6-sample highlight transparency.
+                    local alpha_mul = 0.25 + 0.75 * vis_fraction
+                    alpha = alpha * alpha_mul
+                    is_visible = true
+                end
+            end
+
+            if alpha >= 5 and screen_x and screen_y and is_visible then
+                table.insert(items, {
+                    loc = loc, idx = idx,
+                    wx = loc.pos_x, wy = loc.pos_y, wz = loc.pos_z,
+                    screen_x = screen_x, screen_y = screen_y,
+                    dist = dist, alpha = alpha,
+                    is_nearby = is_nearby, is_selected = is_selected
+                })
+            else
+                if not screen_x or not screen_y then
+                    log_render_skip(loc, "WorldToScreen failed/offscreen")
+                elseif alpha < 5 then
+                    log_render_skip(loc, "alpha too low " .. tostring(math.floor(alpha)))
+                elseif not is_visible then
+                    log_render_skip(loc, "hidden by wall/visibility")
+                else
+                    log_render_skip(loc, "unknown render filter")
+                end
+            end
+        else
+            log_render_skip(loc, "missing pos_x/pos_y/pos_z")
+        end
+    end
+
+    if ui.show_all_maps then
+        for map, _ in pairs(ui.map_data) do
+            if ui.selected_browser == "movement" then
+                if osnova_movement_feature_enabled() then
+                    local locs = osnova_get_locations_for(map, "movement", ui.selected_movement_helper)
+                    for i, loc in pairs(locs) do
+                        add_renderable_location(loc, i, map == ui.current_map and ui.selected_location == i)
+                    end
+                end
+            else
+                -- Show all grenade-group locations from every map. Rendering is visual
+                -- only; gameplay still uses the held grenade. This avoids loaded
+                -- locations being present in file/menu but invisible in world.
+                for def, _ in pairs(ui.groups) do
+                    local cdef = osnova_canon_def_early(def)
+                    if osnova_grenade_feature_enabled(cdef) then
+                        local locs = osnova_get_locations_for(map, "group", cdef)
+                        for i, loc in pairs(locs) do
+                            add_renderable_location(loc, i, map == ui.current_map and ui.selected_group == cdef and ui.selected_location == i)
+                        end
+                    end
+                end
+            end
+        end
+    elseif ui.selected_browser == "movement" then
+        if not osnova_movement_feature_enabled() then return end
+        local locs = osnova_get_locations_for(ui.current_map, "movement", ui.selected_movement_helper)
+        for i, loc in pairs(locs) do
+            add_renderable_location(loc, i, ui.selected_location == i)
+        end
+    else
+        -- Render all grenade-group locations on current map. Gameplay still uses
+        -- held grenade via osnova_get_action_locations(), but visuals should not
+        -- disappear after Lua reload just because UI/held group differ.
+        for def, _ in pairs(ui.groups) do
+            local cdef = osnova_canon_def_early(def)
+            if osnova_grenade_feature_enabled(cdef) then
+                local locs = osnova_get_locations_for(ui.current_map, "group", cdef)
+                for i, loc in pairs(locs) do
+                    add_renderable_location(loc, i, ui.selected_group == cdef and ui.selected_location == i)
+                end
+            end
+        end
+    end
+
+    if #items == 0 then return end
+
+    -- 2) Cluster only when EVERY location inside the cluster is within
+    -- CLUSTER_WORLD_RADIUS (30 units) from the new one. Do NOT use union-find:
+    -- union-find creates chain merges (A close to B, B close to C) and can merge
+    -- A with C even when A-C distance is much bigger than 30.
+    local clusters = {}
+    local wr2 = CLUSTER_WORLD_RADIUS * CLUSTER_WORLD_RADIUS
+
+    local function world_dist_sqr(a, b)
+        local wdx = a.wx - b.wx
+        local wdy = a.wy - b.wy
+        local wdz = a.wz - b.wz
+        return wdx * wdx + wdy * wdy + wdz * wdz
+    end
+
+    for _, it in ipairs(items) do
+        local added = false
+
+        for _, cluster in ipairs(clusters) do
+            local can_add = true
+
+            for _, other in ipairs(cluster) do
+                if world_dist_sqr(it, other) > wr2 then
+                    can_add = false
+                    break
+                end
+            end
+
+            if can_add then
+                table.insert(cluster, it)
+                added = true
+                break
+            end
+        end
+
+        if not added then
+            table.insert(clusters, { it })
+        end
+    end
+
+    -- 3) draw each cluster as one dot + one growing vertical box
+    for _, cluster in pairs(clusters) do
+        local cx, cy = 0, 0
+        local has_nearby = false
+        local has_selected = false
+        local cluster_alpha = 255
+        local cluster_dist = 999999
+        for _, it in ipairs(cluster) do
+            cx = cx + it.screen_x
+            cy = cy + it.screen_y
+            if it.is_nearby then has_nearby = true end
+            if it.is_selected then has_selected = true end
+            if it.alpha < cluster_alpha then cluster_alpha = it.alpha end
+            if it.dist and it.dist < cluster_dist then cluster_dist = it.dist end
+        end
+        cx = cx / #cluster
+        cy = cy / #cluster
+
+        local far_t = 0
+        if cluster_dist > LOCATION_BOX_SHRINK_START then
+            far_t = math.min(1, (cluster_dist - LOCATION_BOX_SHRINK_START) / (LOCATION_MAX_RENDER_DISTANCE - LOCATION_BOX_SHRINK_START))
+        end
+
+        -- Smooth box scaling / line hiding animation. Without this the box size
+        -- and amount of shown locations jumps when crossing 250/450 distance.
+        ui.cluster_anims = ui.cluster_anims or {}
+        local cluster_key = ""
+        for _, it in ipairs(cluster) do
+            cluster_key = cluster_key .. tostring(it.loc) .. ";"
+        end
+
+        local density_t = 0
+        if #cluster > 3 then density_t = math.min(1, (#cluster - 3) / 6) end
+
+        local target_box_scale = 1 - 0.55 * far_t - 0.10 * density_t * far_t
+        if target_box_scale < 0.38 then target_box_scale = 0.38 end
+
+        local target_line_limit = #cluster
+        if far_t > 0 then
+            target_line_limit = math.max(1, 5 - 4 * far_t - 2 * density_t * far_t)
+            if target_line_limit > #cluster then target_line_limit = #cluster end
+        end
+
+        local anim = ui.cluster_anims[cluster_key]
+        if not anim then
+            anim = { scale = target_box_scale, line_limit = target_line_limit }
+            ui.cluster_anims[cluster_key] = anim
+        end
+
+        local anim_t = math.min(1, dt * 8)
+        anim.scale = lerp(anim.scale, target_box_scale, anim_t)
+        anim.line_limit = lerp(anim.line_limit, target_line_limit, anim_t)
+
+        local box_scale = anim.scale
+        local max_visible_lines_float = anim.line_limit
+
+        local mr = 5 * box_scale
+
+        -- colour: brighter white when this cluster holds the selected
+        -- location, dimmer white otherwise (no gold)
+        local cr, cg, cb = 170, 170, 170
+        if has_selected then cr, cg, cb = 255, 255, 255 end
+
+        -- marker rings (same layered look as the aim point)
+        local pulse_r = mr + 2 + pulse * 2 * 0.5
+        draw.Color(cr, cg, cb, cluster_alpha * 0.10)
+        draw.OutlinedCircle(cx, cy, pulse_r + 6)
+        draw.Color(cr, cg, cb, cluster_alpha * 0.15)
+        draw.OutlinedCircle(cx, cy, pulse_r + 3)
+        draw.Color(cr, cg, cb, cluster_alpha * 0.9)
+        draw.FilledCircle(cx, cy, mr)
+        draw.Color(cr, cg, cb, cluster_alpha * 0.5)
+        draw.OutlinedCircle(cx, cy, mr + 2)
+        draw.Color(cr, cg, cb, cluster_alpha * 0.3)
+        draw.OutlinedCircle(cx, cy, mr + 3)
+        draw.Color(cr, cg, cb, cluster_alpha * 0.15)
+        draw.OutlinedCircle(cx, cy, mr + 4)
+        draw.Color(255, 255, 255, cluster_alpha * 0.6)
+        draw.FilledCircle(cx, cy, mr * 0.4)
+
+        -- measure each name (+ distance) line so the box can grow vertically.
+        -- Past 250 units the box gets smaller and the extra lines fade out,
+        -- then collapse into a +N more line.
+        local lines = {}
+        local max_w = 0
+        local line_font = (box_scale < 0.82) and f_bind or f_location
+
+        local full_lines = math.floor(max_visible_lines_float)
+        if full_lines < 1 then full_lines = 1 end
+        local partial_line_alpha = max_visible_lines_float - full_lines
+        local draw_until = math.min(#cluster, full_lines + (partial_line_alpha > 0.05 and 1 or 0))
+        local hidden_count = math.max(0, #cluster - full_lines)
+
+        for idx, it in ipairs(cluster) do
+            if idx > draw_until then break end
+            local name = it.loc.name or "Location"
+            if box_scale < 0.82 and string.len(name) > 18 then
+                name = string.sub(name, 1, 16) .. ".."
+            end
+            draw.SetFont(line_font)
+            local nw = draw.GetTextSize(name)
+            local dist_str = ""
+            local dw = 0
+            local line_w = nw + (dw > 0 and (dw + 10) or 0)
+            if line_w > max_w then max_w = line_w end
+
+            local line_alpha = 1
+            if idx == full_lines + 1 then
+                line_alpha = partial_line_alpha
+            end
+
+            table.insert(lines, { name = name, dist = dist_str, dist_w = dw, sel = it.is_selected, more = false, alpha = line_alpha })
+        end
+
+        local more_alpha = 0
+        if hidden_count > 0 then
+            more_alpha = 1 - partial_line_alpha
+            if more_alpha < 0 then more_alpha = 0 elseif more_alpha > 1 then more_alpha = 1 end
+            local more_name = "+" .. tostring(hidden_count) .. " more"
+            draw.SetFont(f_bind)
+            local mw = draw.GetTextSize(more_name)
+            if mw > max_w then max_w = mw end
+            table.insert(lines, { name = more_name, dist = "", dist_w = 0, sel = false, more = true, alpha = more_alpha })
+        end
+
+        local line_h = math.floor(17 * box_scale)
+        if line_h < 12 then line_h = 12 end
+        local pad_x = math.floor(10 * box_scale)
+        if pad_x < 6 then pad_x = 6 end
+        local pad_y = math.floor(6 * box_scale)
+        if pad_y < 4 then pad_y = 4 end
+        local accent_w = math.max(2, math.floor(3 * box_scale))
+        local box_x = cx + mr + 6 * box_scale
+        local box_w = max_w + pad_x * 2 + accent_w
+        local visual_lines = math.min(#cluster, max_visible_lines_float) + (hidden_count > 0 and more_alpha or 0)
+        if visual_lines < 1 then visual_lines = 1 end
+        local box_h = visual_lines * line_h + pad_y * 2
+        local box_y = cy - box_h / 2
+
+        local box_x2 = box_x + box_w
+        local box_y2 = box_y + box_h
+        local box_r = 4
+
+        -- name box: rounded, same look as the aim-point label
+        draw.Color(0, 0, 0, cluster_alpha * 0.35)
+        draw.ShadowRect(box_x, box_y, box_x2, box_y2, 10)
+
+        draw.Color(12, 12, 12, cluster_alpha * 0.88)
+        draw.RoundedRectFill(box_x, box_y, box_x2, box_y2, box_r, box_r, box_r, box_r, box_r)
+
+        draw.Color(cr, cg, cb, cluster_alpha * 0.6)
+        draw.RoundedRect(box_x, box_y, box_x2, box_y2, box_r, box_r, box_r, box_r, box_r)
+
+        draw.Color(cr, cg, cb, cluster_alpha * 0.9)
+        draw.RoundedRectFill(box_x + 2, box_y + 2, box_x + 2 + accent_w, box_y2 - 2, 2, 2, 0, 2, 0)
+
+        for j, ln in ipairs(lines) do
+            local line_alpha = ln.alpha or 1
+            if line_alpha > 0.03 then
+                local ly = box_y + pad_y + (j - 1) * line_h
+                draw.SetFont(ln.more and f_bind or line_font)
+                if ln.more then
+                    draw.Color(125, 125, 125, cluster_alpha * 0.85 * line_alpha)
+                elseif ln.sel then
+                    draw.Color(255, 255, 255, cluster_alpha * line_alpha)
+                else
+                    draw.Color(170, 170, 170, cluster_alpha * line_alpha)
+                end
+                draw.Text(box_x + accent_w + pad_x, ly + math.max(1, math.floor(2 * box_scale)), ln.name)
+
+                if ln.dist ~= "" then
+                    draw.SetFont(f_distance)
+                    draw.Color(255, 160, 0, cluster_alpha * line_alpha)
+                    draw.Text(box_x + box_w - pad_x - ln.dist_w, ly + 3, ln.dist)
+                end
+            end
+        end
+
+        if has_nearby then
+            draw.SetFont(f_distance)
+            draw.Color(255, 255, 255, cluster_alpha * 0.7)
+            local shw = draw.GetTextSize("STAND HERE")
+            draw.Text(cx - shw / 2, cy + mr + 12, "STAND HERE")
+        end
+
+    end
+
+    -- FOV cone visualisation: a faint circle of radius AIM_FOV_PX around
+    -- the crosshair. A location's aim point must fall inside this ring to
+    -- be eligible for auto-aim / auto-walk / playback.
+    if ui.settings.active and ((osnova_is_holding_grenade() and osnova_grenade_feature_enabled(ui.selected_group)) or (ui.selected_browser == "movement" and osnova_movement_feature_enabled())) then
+        local fov = (ui.settings and ui.settings.fov) or AIM_FOV_PX
+        local sw, sh = draw.GetScreenSize()
+        if sw > 0 and sh > 0 then
+            draw.Color(255, 255, 255, 40)
+            draw.OutlinedCircle(sw / 2, sh / 2, fov)
+            draw.Color(255, 255, 255, 18)
+            draw.OutlinedCircle(sw / 2, sh / 2, fov - 2)
+        end
+    end
+end
+
+
+
+-- Drawing helpers
+local function draw_button(x, y, w, h, label, callback)
+    local hover = mouse_in(x, y, w, h)
+    local down = hover and input.IsButtonDown(1)
+
+    local bg = down and 235 or (hover and 42 or 24)
+    local fg = down and 12 or (hover and 255 or 210)
+    local border = hover and 95 or 46
+
+    -- soft button shadow
+    draw.Color(0, 0, 0, hover and 95 or 55)
+    draw.ShadowRect(x, y, x + w, y + h, hover and 10 or 6)
+
+    draw.Color(bg, bg, bg, 255)
+    draw.RoundedRectFill(x, y, x + w, y + h, 5, 5, 5, 5, 5)
+
+    -- left accent line, gives all buttons the same OSNOVA style
+    draw.Color(down and 25 or 255, down and 25 or 255, down and 25 or 255, hover and 230 or 145)
+    draw.RoundedRectFill(x + 3, y + 4, x + 6, y + h - 4, 2, 2, 0, 2, 0)
+
+    draw.Color(border, border, border, 255)
+    draw.RoundedRect(x, y, x + w, y + h, 5, 5, 5, 5, 5)
+
+    draw.SetFont(f_main)
+    draw.Color(fg, fg, fg, 255)
+    local tw, th = draw.GetTextSize(label)
+    draw.Text(x + (w - tw) / 2 + 2, y + (h - th) / 2, label)
+
+    if hover and input.IsButtonPressed(1) and not ui.active_combo and not ui._combo_blocked then
+        ui._combo_blocked = true
+        if callback then callback() end
+    end
+end
+
+local function draw_listbox(x, y, w, h, items, mode)
+    draw.Color(13, 13, 13, 255)
+    draw.FilledRect(x, y, x + w, y + h)
+    draw.Color(unpack(ui.clr.outline))
+    draw.OutlinedRect(x, y, x + w, y + h)
+    if not items or #items == 0 then return end
+
+    local sc = "location_scroll"
+    if mode == "group" then
+        sc = "group_scroll"
+    elseif mode == "movement" then
+        sc = "movement_scroll"
+    end
+    if mouse_in(x, y, w, h) then ui[sc] = math.max(0, ui[sc] - input.GetMouseWheelDelta()) end
+
+    for i = ui[sc] + 1, #items do
+        local display_idx = i - ui[sc]
+        local iy = y + (display_idx - 1) * 22
+        if iy + 22 > y + h then break end
+
+        local hover = mouse_in(x, iy, w, 22)
+        local selected = false
+
+        if mode == "group" then
+            selected = (ui.selected_browser == "group" and ui.selected_group == items[i].def)
+        elseif mode == "movement" then
+            selected = (ui.selected_browser == "movement" and ui.selected_movement_helper == items[i].id)
+        elseif mode == "location" then
+            selected = (ui.selected_location == i)
+        end
+
+        if selected then
+            draw.Color(255, 255, 255, 40)
+            draw.FilledRect(x + 1, iy + 1, x + w - 1, iy + 21)
+            draw.Color(255, 255, 255, 220)
+            draw.FilledRect(x + 1, iy + 1, x + 3, iy + 21)
+        elseif hover and mode ~= "none" then
+            draw.Color(255, 255, 255, 8)
+            draw.FilledRect(x + 1, iy + 1, x + w - 1, iy + 21)
+        end
+
+        draw.SetFont(f_main)
+        local name = items[i].name or tostring(items[i])
+        if selected and ui.renaming and ui.rename_target == mode then name = ui.rename_buf .. "_" end
+
+        draw.Color(selected and 255 or 160, selected and 255 or 160, selected and 255 or 160, 255)
+        draw.Text(x + 10, iy + 4, name)
+
+
+        if hover and input.IsButtonPressed(1) and not ui.active_combo and not ui._combo_blocked then
+            if mode == "group" then
+                ui.selected_browser = "group"
+                ui.selected_group = items[i].def
+                ui.selected_location = 0
+                ui.renaming = false
+                sync_current_locations()
+            elseif mode == "movement" then
+                ui.selected_browser = "movement"
+                ui.selected_movement_helper = items[i].id
+                ui.selected_location = 0
+                ui.edit_mode = false
+                ui.renaming = false
+                sync_current_locations()
+            elseif mode == "location" then
+                ui.selected_location = i
+                ui.renaming = false
+            end
+        end
+    end
+end
+
+-- Slider, toggle, combo, bind (unchanged)
+local draw_check_mark
+
+local function draw_slider(x, y, w, label, target_tbl, var, min, max, suffix)
+    if not target_tbl then return end
+    local mx, my = input.GetMousePos()
+
+    local val = target_tbl[var] or min
+    if val < min then val = min end
+    if val > max then val = max end
+
+    draw.SetFont(f_main)
+    draw.Color(225, 225, 225, 255)
+    draw.Text(x, y, label)
+
+    local val_txt = tostring(math.floor(val)) .. (suffix or "")
+    draw.SetFont(f_bind)
+    local tw, th = draw.GetTextSize(val_txt)
+    local pill_w = tw + 16
+    local pill_h = 18
+    local pill_x = x + w - pill_w
+    local pill_y = y - 2
+
+    draw.Color(22, 22, 24, 245)
+    draw.RoundedRectFill(pill_x, pill_y, pill_x + pill_w, pill_y + pill_h, 5, 5, 5, 5, 5)
+    draw.Color(55, 55, 58, 255)
+    draw.RoundedRect(pill_x, pill_y, pill_x + pill_w, pill_y + pill_h, 5, 5, 5, 5, 5)
+    draw.Color(230, 230, 230, 255)
+    draw.Text(pill_x + (pill_w - tw) / 2, pill_y + (pill_h - th) / 2, val_txt)
+
+    local sy = y + 22
+    local sw = w
+    local sh = 6
+    local hover = mouse_in(x, sy - 7, sw, sh + 14)
+
+    if hover and input.IsButtonPressed(1) and ui.active_slider == nil and not ui.active_combo and not ui._combo_blocked then
+        ui.active_slider = var
+        ui._combo_blocked = true
+    end
+    if not input.IsButtonDown(1) then ui.active_slider = nil end
+    if ui.active_slider == var then
+        local np = math.min(1, math.max(0, (mx - x) / sw))
+        target_tbl[var] = min + np * (max - min)
+        val = target_tbl[var]
+    end
+
+    local p = (val - min) / (max - min)
+    if p < 0 then p = 0 elseif p > 1 then p = 1 end
+
+    draw.Color(0, 0, 0, 80)
+    draw.ShadowRect(x, sy, x + sw, sy + sh, 7)
+    draw.Color(24, 24, 26, 255)
+    draw.RoundedRectFill(x, sy, x + sw, sy + sh, 3, 3, 3, 3, 3)
+    draw.Color(48, 48, 52, 255)
+    draw.RoundedRect(x, sy, x + sw, sy + sh, 3, 3, 3, 3, 3)
+
+    local fill_x = x + sw * p
+    draw.Color(245, 245, 245, 255)
+    draw.RoundedRectFill(x, sy, fill_x, sy + sh, 3, 3, 3, 3, 3)
+
+    draw.Color(255, 255, 255, hover and 255 or 220)
+    draw.FilledCircle(fill_x, sy + sh / 2, hover and 6 or 5)
+    draw.Color(40, 40, 40, 220)
+    draw.OutlinedCircle(fill_x, sy + sh / 2, hover and 7 or 6)
+end
+
+local function draw_toggle(x, y, w, label, target_tbl, var)
+    if not target_tbl then return end
+
+    local on = target_tbl[var] and true or false
+    local box = 18
+    local bx = x + w - box
+    local by = y - 2
+    local hover = mouse_in(bx - 4, by - 3, box + 8, box + 6)
+
+    draw.SetFont(f_main)
+    draw.Color(on and 235 or 190, on and 235 or 190, on and 235 or 190, 255)
+    draw.Text(x, y, label)
+
+    draw.Color(0, 0, 0, hover and 100 or 55)
+    draw.ShadowRect(bx, by, bx + box, by + box, hover and 10 or 6)
+
+    draw.Color(on and 240 or (hover and 34 or 20), on and 240 or (hover and 34 or 20), on and 240 or (hover and 34 or 20), 255)
+    draw.RoundedRectFill(bx, by, bx + box, by + box, 4, 4, 4, 4, 4)
+    draw.Color(on and 255 or (hover and 90 or 54), on and 255 or (hover and 90 or 54), on and 255 or (hover and 90 or 54), 255)
+    draw.RoundedRect(bx, by, bx + box, by + box, 4, 4, 4, 4, 4)
+
+    if on then
+        draw_check_mark(bx + 3, by + 3, box - 6, 15, 15, 15, 255)
+    end
+
+    if hover and input.IsButtonPressed(1) and not ui.active_combo and not ui._combo_blocked then
+        target_tbl[var] = not on
+        ui._combo_blocked = true
+    end
+end
+
+local function draw_combo(x, y, w, label, target_tbl, var, items)
+    if not target_tbl then return end
+
+    draw.SetFont(f_main)
+    draw.Color(unpack(ui.clr.text))
+    draw.Text(x, y, label)
+
+    local bx = x
+    local by = y + 16
+    local bh = 20
+
+    draw.Color(20, 20, 20, 255)
+    draw.FilledRect(bx, by, bx + w, by + bh)
+    draw.Color(unpack(ui.clr.outline))
+    draw.OutlinedRect(bx, by, bx + w, by + bh)
+
+    local current_idx = target_tbl[var] or 1
+    draw.SetFont(f_bind)
+    draw.Color(200, 200, 200, 255)
+    draw.Text(bx + 10, by + 4, items[current_idx])
+
+    if mouse_in(bx, by, w, bh) and input.IsButtonPressed(1) and not ui._combo_blocked then
+        if ui.active_combo and ui.active_combo.target == target_tbl and ui.active_combo.var == var then
+            ui.active_combo = nil
+        else
+            ui.active_combo = {x = bx, y = by + bh, w = w, items = items, target = target_tbl, var = var, scroll = 0}
+        end
+    end
+end
+
+local function draw_bind(x, y, w, label, target_type, current_key)
+    local bw = 86
+    local bh = 22
+    local bx = x + w - bw
+    local by = y - 3
+    local hover = mouse_in(bx, by, bw, bh)
+    local listening = ui.binding and ui.bind_target == target_type
+    local right_hint = (target_type == "main_enable")
+
+    -- label
+    draw.SetFont(f_main)
+    draw.Color(listening and 255 or 220, listening and 255 or 220, listening and 255 or 220, 255)
+    draw.Text(x, y, label)
+
+    -- key name
+    local name = listening and "PRESS KEY" or (keys[current_key] or "[" .. tostring(current_key) .. "]")
+    if target_type == "main_enable" and ui.settings.mode == 0 and not listening then name = "ALWAYS" end
+
+    -- soft background shadow
+    draw.Color(0, 0, 0, hover and 105 or 65)
+    draw.ShadowRect(bx, by, bx + bw, by + bh, hover and 12 or 8)
+
+    -- body
+    local bg = listening and 235 or (hover and 38 or 20)
+    local fg = listening and 14 or (hover and 245 or 185)
+    local br = listening and 255 or (hover and 86 or 46)
+
+    draw.Color(bg, bg, bg, 255)
+    draw.RoundedRectFill(bx, by, bx + bw, by + bh, 6, 6, 6, 6, 6)
+    draw.Color(br, br, br, 255)
+    draw.RoundedRect(bx, by, bx + bw, by + bh, 6, 6, 6, 6, 6)
+
+    -- small left status capsule
+    draw.Color(listening and 20 or 255, listening and 20 or 255, listening and 20 or 255, listening and 255 or (hover and 205 or 125))
+    draw.RoundedRectFill(bx + 4, by + 5, bx + 7, by + bh - 5, 2, 2, 0, 2, 0)
+
+    -- key text
+    draw.SetFont(f_bind)
+    draw.Color(fg, fg, fg, 255)
+    local tw, th = draw.GetTextSize(name)
+    draw.Text(bx + (bw - tw) / 2 + 2, by + (bh - th) / 2, name)
+
+    -- tiny mode dots for Enable Helper: right click opens mode selector
+    if right_hint and not listening then
+        local mode = ui.settings.mode or 1
+        for i = 0, 2 do
+            local dx = bx + bw - 18 + i * 5
+            local dy = by + bh - 5
+            if mode == i then
+                draw.Color(255, 255, 255, hover and 230 or 170)
+                draw.FilledCircle(dx, dy, 2)
+            else
+                draw.Color(95, 95, 95, 180)
+                draw.FilledCircle(dx, dy, 1)
+            end
+        end
+    end
+
+    if hover and input.IsButtonPressed(1) and not ui.binding and not ui.bind_click_block and not ui.active_combo and not ui._combo_blocked then
+        ui.binding = true
+        ui.bind_target = target_type
+        ui._combo_blocked = true
+    end
+
+    if hover and input.IsButtonPressed(2) and not ui.binding and not ui.bind_click_block and target_type == "main_enable" and not ui.active_combo and not ui._combo_blocked then
+        ui.popup.open = true
+        ui.popup.x, ui.popup.y = input.GetMousePos()
+        ui._combo_blocked = true
+    end
+end
+
+local function process_combo_input()
+    ui._combo_blocked = false
+    if not ui.active_combo then return end
+    if not input.IsButtonPressed(1) then return end
+
+    local c = ui.active_combo
+    local max_h = 110
+    local h = math.min(#c.items * 22, max_h)
+
+    for i = c.scroll + 1, #c.items do
+        local d_idx = i - c.scroll
+        local iy = c.y + (d_idx - 1) * 22
+        if iy + 22 > c.y + h + 1 then break end
+        if mouse_in(c.x, iy, c.w, 22) then
+            c.target[c.var] = i
+            ui.active_combo = nil
+            ui._combo_blocked = true
+            return
+        end
+    end
+
+    if not mouse_in(c.x, c.y - 22, c.w, h + 22) then
+        ui.active_combo = nil
+        ui._combo_blocked = true
+    end
+end
+
+local function render_active_combo()
+    if not ui.active_combo then return end
+
+    local c = ui.active_combo
+    local max_h = 110
+    local h = math.min(#c.items * 22, max_h)
+
+    if mouse_in(c.x, c.y, c.w, h) then
+        c.scroll = math.max(0, math.min(#c.items - 5, c.scroll - input.GetMouseWheelDelta()))
+    end
+
+    draw.Color(15, 15, 15, 255)
+    draw.FilledRect(c.x, c.y, c.x + c.w, c.y + h)
+    draw.Color(unpack(ui.clr.outline))
+    draw.OutlinedRect(c.x, c.y, c.x + c.w, c.y + h)
+
+    for i = c.scroll + 1, #c.items do
+        local d_idx = i - c.scroll
+        local iy = c.y + (d_idx - 1) * 22
+        if iy + 22 > c.y + h + 1 then break end
+
+        local hov = mouse_in(c.x, iy, c.w, 22)
+        local sel = (c.target[c.var] == i)
+
+        if sel then
+            draw.Color(255, 255, 255, 30)
+            draw.FilledRect(c.x + 1, iy + 1, c.x + c.w - 1, iy + 21)
+        elseif hov then
+            draw.Color(255, 255, 255, 10)
+            draw.FilledRect(c.x + 1, iy + 1, c.x + c.w - 1, iy + 21)
+        end
+
+        draw.SetFont(f_bind)
+        draw.Color(sel and 255 or 150, sel and 255 or 150, sel and 255 or 150, 255)
+        draw.Text(c.x + 10, iy + 4, c.items[i])
+    end
+end
+
+local FEATURE_ITEMS = {
+    { key = "smoke", label = "Smoke" },
+    { key = "he", label = "HE Grenade" },
+    { key = "flash", label = "Flashbang" },
+    { key = "molotov", label = "Molotov / Incendiary" },
+    { key = "decoy", label = "Decoy" },
+    { key = "movement", label = "Movement" },
+}
+
+draw_check_mark = function(x, y, size, r, g, b, a)
+    draw.Color(r, g, b, a)
+    draw.Line(x + 3, y + math.floor(size * 0.55), x + math.floor(size * 0.42), y + size - 3)
+    draw.Line(x + math.floor(size * 0.42), y + size - 3, x + size - 2, y + 3)
+end
+
+local function draw_feature_multibox(x, y, w, label)
+    draw.SetFont(f_main)
+    draw.Color(230, 230, 230, 255)
+    draw.Text(x, y, label)
+
+    local bx, by, bh = x, y + 16, 24
+    local open = ui.active_feature_multibox ~= nil
+    local hover = mouse_in(bx, by, w, bh)
+
+    draw.Color(0, 0, 0, 90)
+    draw.ShadowRect(bx, by, bx + w, by + bh, 8)
+
+    draw.Color(18, 18, 18, 245)
+    draw.RoundedRectFill(bx, by, bx + w, by + bh, 5, 5, 5, 5, 5)
+    draw.Color(hover and 70 or 42, hover and 70 or 42, hover and 70 or 42, 255)
+    draw.RoundedRect(bx, by, bx + w, by + bh, 5, 5, 5, 5, 5)
+
+    local enabled, total = 0, #FEATURE_ITEMS
+    for _, it in ipairs(FEATURE_ITEMS) do
+        if ui.features[it.key] ~= false then enabled = enabled + 1 end
+    end
+
+    -- small white accent on the left
+    draw.Color(255, 255, 255, 210)
+    draw.RoundedRectFill(bx + 3, by + 4, bx + 6, by + bh - 4, 2, 2, 0, 2, 0)
+
+    draw.SetFont(f_bind)
+    draw.Color(225, 225, 225, 255)
+    draw.Text(bx + 14, by + 6, "Enabled: " .. enabled .. "/" .. total)
+
+    -- arrow, drawn with lines instead of unicode
+    draw.Color(180, 180, 180, 255)
+    local ax = bx + w - 18
+    local ay = by + 9
+    if open then
+        draw.Line(ax, ay + 6, ax + 5, ay)
+        draw.Line(ax + 5, ay, ax + 10, ay + 6)
+    else
+        draw.Line(ax, ay, ax + 5, ay + 6)
+        draw.Line(ax + 5, ay + 6, ax + 10, ay)
+    end
+
+    if hover and input.IsButtonPressed(1) and not ui._combo_blocked then
+        if ui.active_feature_multibox then
+            ui.active_feature_multibox = nil
+        else
+            ui.active_feature_multibox = { x = bx, y = by + bh + 4, w = w }
+        end
+        ui._combo_blocked = true
+    end
+end
+
+local function process_feature_multibox_input()
+    if not ui.active_feature_multibox then return end
+    if not input.IsButtonPressed(1) then return end
+
+    local c = ui.active_feature_multibox
+    local row_h = 24
+    local h = #FEATURE_ITEMS * row_h + 8
+
+    for i, it in ipairs(FEATURE_ITEMS) do
+        local iy = c.y + 4 + (i - 1) * row_h
+        if mouse_in(c.x + 4, iy, c.w - 8, row_h) then
+            ui.features[it.key] = not (ui.features[it.key] ~= false)
+            ui._combo_blocked = true
+            return
+        end
+    end
+
+    if not mouse_in(c.x, c.y - 28, c.w, h + 28) then
+        ui.active_feature_multibox = nil
+        ui._combo_blocked = true
+    end
+end
+
+local function render_feature_multibox()
+    if not ui.active_feature_multibox then return end
+    local c = ui.active_feature_multibox
+    local row_h = 24
+    local h = #FEATURE_ITEMS * row_h + 8
+
+    draw.Color(0, 0, 0, 120)
+    draw.ShadowRect(c.x, c.y, c.x + c.w, c.y + h, 14)
+    draw.Color(13, 13, 13, 250)
+    draw.RoundedRectFill(c.x, c.y, c.x + c.w, c.y + h, 6, 6, 6, 6, 6)
+    draw.Color(48, 48, 48, 255)
+    draw.RoundedRect(c.x, c.y, c.x + c.w, c.y + h, 6, 6, 6, 6, 6)
+
+    for i, it in ipairs(FEATURE_ITEMS) do
+        local iy = c.y + 4 + (i - 1) * row_h
+        local hov = mouse_in(c.x + 4, iy, c.w - 8, row_h)
+        local on = ui.features[it.key] ~= false
+
+        if hov then
+            draw.Color(255, 255, 255, 12)
+            draw.RoundedRectFill(c.x + 4, iy + 1, c.x + c.w - 4, iy + row_h - 1, 4, 4, 4, 4, 4)
+        end
+
+        local cbx, cby, cs = c.x + 10, iy + 5, 14
+        draw.Color(on and 245 or 28, on and 245 or 28, on and 245 or 28, 255)
+        draw.RoundedRectFill(cbx, cby, cbx + cs, cby + cs, 3, 3, 3, 3, 3)
+        draw.Color(on and 255 or 80, on and 255 or 80, on and 255 or 80, 255)
+        draw.RoundedRect(cbx, cby, cbx + cs, cby + cs, 3, 3, 3, 3, 3)
+
+        if on then
+            draw_check_mark(cbx + 1, cby + 1, cs - 2, 15, 15, 15, 255)
+        end
+
+        draw.SetFont(f_bind)
+        draw.Color(on and 230 or 115, on and 230 or 115, on and 230 or 115, 255)
+        draw.Text(c.x + 32, iy + 6, it.label)
+    end
+end
+
+
+local VISUAL_ITEMS = {
+    { key = "through_walls", label = "Locations Through Walls" },
+}
+
+local function draw_visual_multibox(x, y, w, label)
+    draw.SetFont(f_main)
+    draw.Color(230, 230, 230, 255)
+    draw.Text(x, y, label)
+
+    local bx, by, bh = x, y + 16, 24
+    local open = ui.active_visual_multibox ~= nil
+    local hover = mouse_in(bx, by, w, bh)
+
+    draw.Color(0, 0, 0, 90)
+    draw.ShadowRect(bx, by, bx + w, by + bh, 8)
+    draw.Color(18, 18, 18, 245)
+    draw.RoundedRectFill(bx, by, bx + w, by + bh, 5, 5, 5, 5, 5)
+    draw.Color(hover and 70 or 42, hover and 70 or 42, hover and 70 or 42, 255)
+    draw.RoundedRect(bx, by, bx + w, by + bh, 5, 5, 5, 5, 5)
+
+    local enabled, total = 0, #VISUAL_ITEMS
+    for _, it in ipairs(VISUAL_ITEMS) do
+        if ui.visual_features[it.key] ~= false then enabled = enabled + 1 end
+    end
+
+    draw.Color(255, 255, 255, 210)
+    draw.RoundedRectFill(bx + 3, by + 4, bx + 6, by + bh - 4, 2, 2, 0, 2, 0)
+
+    draw.SetFont(f_bind)
+    draw.Color(225, 225, 225, 255)
+    draw.Text(bx + 14, by + 6, "Visual: " .. enabled .. "/" .. total)
+
+    draw.Color(180, 180, 180, 255)
+    local ax = bx + w - 18
+    local ay = by + 9
+    if open then
+        draw.Line(ax, ay + 6, ax + 5, ay)
+        draw.Line(ax + 5, ay, ax + 10, ay + 6)
+    else
+        draw.Line(ax, ay, ax + 5, ay + 6)
+        draw.Line(ax + 5, ay + 6, ax + 10, ay)
+    end
+
+    if hover and input.IsButtonPressed(1) and not ui._combo_blocked then
+        if ui.active_visual_multibox then
+            ui.active_visual_multibox = nil
+        else
+            ui.active_visual_multibox = { x = bx, y = by + bh + 4, w = w }
+        end
+        ui._combo_blocked = true
+    end
+end
+
+local function process_visual_multibox_input()
+    if not ui.active_visual_multibox then return end
+    if not input.IsButtonPressed(1) then return end
+
+    local c = ui.active_visual_multibox
+    local row_h = 24
+    local h = #VISUAL_ITEMS * row_h + 8
+
+    for i, it in ipairs(VISUAL_ITEMS) do
+        local iy = c.y + 4 + (i - 1) * row_h
+        if mouse_in(c.x + 4, iy, c.w - 8, row_h) then
+            ui.visual_features[it.key] = not (ui.visual_features[it.key] ~= false)
+            ui._combo_blocked = true
+            return
+        end
+    end
+
+    if not mouse_in(c.x, c.y - 28, c.w, h + 28) then
+        ui.active_visual_multibox = nil
+        ui._combo_blocked = true
+    end
+end
+
+local function render_visual_multibox()
+    if not ui.active_visual_multibox then return end
+    local c = ui.active_visual_multibox
+    local row_h = 24
+    local h = #VISUAL_ITEMS * row_h + 8
+
+    draw.Color(0, 0, 0, 120)
+    draw.ShadowRect(c.x, c.y, c.x + c.w, c.y + h, 14)
+    draw.Color(13, 13, 13, 250)
+    draw.RoundedRectFill(c.x, c.y, c.x + c.w, c.y + h, 6, 6, 6, 6, 6)
+    draw.Color(48, 48, 48, 255)
+    draw.RoundedRect(c.x, c.y, c.x + c.w, c.y + h, 6, 6, 6, 6, 6)
+
+    for i, it in ipairs(VISUAL_ITEMS) do
+        local iy = c.y + 4 + (i - 1) * row_h
+        local hov = mouse_in(c.x + 4, iy, c.w - 8, row_h)
+        local on = ui.visual_features[it.key] ~= false
+
+        if hov then
+            draw.Color(255, 255, 255, 12)
+            draw.RoundedRectFill(c.x + 4, iy + 1, c.x + c.w - 4, iy + row_h - 1, 4, 4, 4, 4, 4)
+        end
+
+        local cbx, cby, cs = c.x + 10, iy + 5, 14
+        draw.Color(on and 245 or 28, on and 245 or 28, on and 245 or 28, 255)
+        draw.RoundedRectFill(cbx, cby, cbx + cs, cby + cs, 3, 3, 3, 3, 3)
+        draw.Color(on and 255 or 80, on and 255 or 80, on and 255 or 80, 255)
+        draw.RoundedRect(cbx, cby, cbx + cs, cby + cs, 3, 3, 3, 3, 3)
+
+        if on then
+            draw_check_mark(cbx + 1, cby + 1, cs - 2, 15, 15, 15, 255)
+        end
+
+        draw.SetFont(f_bind)
+        draw.Color(on and 230 or 115, on and 230 or 115, on and 230 or 115, 255)
+        draw.Text(c.x + 32, iy + 6, it.label)
+    end
+end
+
+local function save_location_position_and_aim(loc)
+    pcall(function()
+        local local_player = entities.GetLocalPlayer()
+        if local_player and local_player:IsAlive() then
+            local origin = local_player:GetAbsOrigin()
+            local angles = nil
+            pcall(function()
+                if engine and engine.GetViewAngles then
+                    angles = engine.GetViewAngles()
+                end
+            end)
+            if not angles then
+                pcall(function() angles = local_player:GetAbsAngles() end)
+            end
+            angles = angles or { pitch = 0, yaw = 0, x = 0, y = 0 }
+
+            local pitch = angles.pitch or angles.x or 0
+            local yaw = angles.yaw or angles.y or 0
+
+            loc.pos_x = origin.x
+            loc.pos_y = origin.y
+            loc.pos_z = origin.z
+            loc.view_pitch = pitch
+            loc.view_yaw = yaw
+
+            local yaw_rad = yaw * math.pi / 180
+            local pitch_rad = pitch * math.pi / 180
+            local cos_p = math.cos(pitch_rad)
+            local sin_p = math.sin(pitch_rad)
+
+            local aim_dist = 500
+            loc.aim_x = origin.x + math.cos(yaw_rad) * cos_p * aim_dist
+            loc.aim_y = origin.y + math.sin(yaw_rad) * cos_p * aim_dist
+            loc.aim_z = origin.z + 64 - sin_p * aim_dist
+
+        end
+    end)
+end
+
+local function osnova_new_location(name, is_movement)
+    return {
+        name = name or (is_movement and "Movement Loc" or "New Loc"),
+        nade_type = 1,
+        movement_helper = is_movement and "knife" or nil,
+        is_movement = is_movement or false,
+        m_dir = 1, t_type = 1,
+        e_walk = false, run_t = 500,
+        e_crouch = false, crouch_t = 500,
+        e_jump = false, jump_d = 0,
+        e_throw = false, throw_d = 0,
+        pos_x = nil, pos_y = nil, pos_z = nil,
+        view_pitch = nil, view_yaw = nil,
+        aim_x = nil, aim_y = nil, aim_z = nil
+    }
+end
+
+local function osnova_create_current_location()
+    local locs = get_current_locations()
+    local is_movement = (ui.selected_browser == "movement")
+    local name = is_movement and ("Movement Loc " .. tostring(osnova_count_locations(locs) + 1)) or "New Loc"
+    local loc = osnova_new_location(name, is_movement)
+    table.insert(locs, loc)
+    ui.selected_location = #locs
+
+    -- Important: fill position/aim BEFORE saving the table. Otherwise an empty
+    -- New Loc gets written to txt and later cannot render.
+    save_location_position_and_aim(loc)
+
+    set_current_locations(locs)
+    sync_current_locations()
+    return loc
+end
+
+-- Used by global Save Location / Record Grenade keys: if no location is selected,
+-- create one once and keep it selected. Next key presses update / record the same loc
+-- instead of spawning a new one every time.
+local function osnova_get_or_create_selected_location()
+    local locs = get_current_locations()
+    local loc = locs[ui.selected_location]
+    if loc then return loc end
+    return osnova_create_current_location()
+end
+
+
+-- After assigning a bind, suppress that same key for a moment / until release.
+-- Without this, setting Save/Record bind can instantly trigger Save/Record and
+-- create a location in the same keypress used for binding.
+local function osnova_suppress_bound_key(key)
+    if key and key ~= 0 then
+        ui.suppress_key = key
+        ui.suppress_until = common.Time() + 0.45
+    end
+end
+
+local function osnova_key_is_suppressed(key)
+    if not key or key == 0 then return false end
+    if ui.suppress_key ~= key then return false end
+
+    local now = common.Time()
+    if input.IsButtonDown(key) or now < (ui.suppress_until or 0) then
+        return true
+    end
+
+    ui.suppress_key = nil
+    ui.suppress_until = nil
+    return false
+end
+
+-- While the bind picker is waiting for a key, release movement/attack keys so
+-- pressing W/A/S/D/Space/etc as a bind does not make the player walk/jump/shoot.
+local function osnova_block_bind_movement()
+    pcall(function()
+        if client and client.Command then
+            client.Command("-forward; -back; -moveleft; -moveright; -left; -right; -jump; -duck; -speed; -attack", true)
+        end
+    end)
+
+    local ffi = rawget(_G, "ffi")
+    if type(ffi) ~= "table" then return end
+
+    pcall(function()
+        ffi.cdef[[
+            void keybd_event(unsigned char bVk, unsigned char bScan, unsigned long dwFlags, unsigned long dwExtraInfo);
+            void mouse_event(unsigned long dwFlags, unsigned long dx, unsigned long dy, unsigned long dwData, unsigned long dwExtraInfo);
+        ]]
+    end)
+
+    local KEYUP = 0x0002
+    local MOUSEEVENTF_LEFTUP = 0x0004
+    local keys_to_release = {
+        0x57, -- W
+        0x41, -- A
+        0x53, -- S
+        0x44, -- D
+        0x20, -- SPACE
+        0x11, -- CTRL
+        0x10, -- SHIFT
+    }
+
+    for _, vk in ipairs(keys_to_release) do
+        pcall(function() ffi.C.keybd_event(vk, 0, KEYUP, 0) end)
+    end
+    pcall(function() ffi.C.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0) end)
+end
+
+-- === AUTO GROUP SWITCH ===
+local last_held_def = nil
+local last_held_movement_helper = nil
+
+local function auto_switch_group()
+    local held = osnova_canonical_grenade_def(osnova_active_grenade_def())
+    if held and ui.groups[held] and osnova_grenade_feature_enabled(held) then
+        -- Auto-open ONLY when the held grenade just changed / was just equipped.
+        -- After that the user can freely click Knife or another grenade tab without
+        -- being forced back every frame while still holding the same grenade.
+        if held ~= last_held_def then
+            ui.selected_browser = "group"
+            ui.selected_group = held
+            ui.selected_location = 0
+            sync_current_locations()
+        end
+        last_held_def = held
+        last_held_movement_helper = nil
+        return
+    end
+    last_held_def = nil
+
+    local helper_id = osnova_active_movement_helper_id()
+    if helper_id and ui.movement_helpers[helper_id] and osnova_movement_feature_enabled() then
+        -- Auto-open ONLY when the movement helper weapon just changed / was just equipped.
+        -- Do not keep forcing the Knife tab while the knife is still in hand.
+        if helper_id ~= last_held_movement_helper then
+            ui.selected_browser = "movement"
+            ui.selected_movement_helper = helper_id
+            ui.selected_location = 0
+            ui.edit_mode = false
+            ui.renaming = false
+            sync_current_locations()
+        end
+        last_held_movement_helper = helper_id
+        return
+    end
+    last_held_movement_helper = nil
+end
+
+
+local last_enable_key_down = false
+local function osnova_update_helper_active()
+    local key = ui.settings.key
+    local mode = ui.settings.mode
+
+    if mode == 0 then
+        ui.settings.active = true
+        last_enable_key_down = false
+    elseif mode == 1 then
+        local down = (key ~= 0) and input.IsButtonDown(key) and not osnova_key_is_suppressed(key) or false
+        if down and not last_enable_key_down and not ui.binding and not ui.renaming then
+            ui.settings.toggled = not ui.settings.toggled
+        end
+        last_enable_key_down = down
+        ui.settings.active = ui.settings.toggled
+    elseif mode == 2 then
+        ui.settings.active = (key ~= 0) and input.IsButtonDown(key) and not osnova_key_is_suppressed(key) or false
+        last_enable_key_down = ui.settings.active
+    else
+        ui.settings.active = false
+        last_enable_key_down = false
+    end
+end
+
+callbacks.Register("Draw", "osnova_gh_full", function()
+    local menu_active = gui.Reference("Menu"):IsActive()
+    ui.menu_active = menu_active
+    local mk = input.IsButtonDown(72)
+
+    -- After assigning a mouse bind, block the same click from reopening bind mode
+    -- while the cursor is still over the bind box. Release LMB to allow binding again.
+    if ui.bind_click_block and not input.IsButtonDown(1) then
+        ui.bind_click_block = false
+    end
+
+    if menu_active and not ui.binding and not ui.renaming and mk and not last_menu_key then
+        ui.open = not ui.open
+        ui.popup.open = false
+        ui.active_combo = nil
+    end
+    last_menu_key = mk
+
+    -- Keep menu rendering even if world / weapon detection code fails.
+    local ok_auto, err_auto = pcall(function()
+        auto_switch_group()               -- auto open correct group
+        sync_current_locations()
+        render_world_locations()
+    end)
+
+
+    -- Enable logic
+    osnova_update_helper_active()
+
+    -- Global Save Location key
+    if not ui.renaming and not ui.binding then
+        local save_key = ui.settings.save_key
+        if save_key and save_key ~= 0 and input.IsButtonPressed(save_key) and not osnova_key_is_suppressed(save_key) then
+            local sel = osnova_get_or_create_selected_location()
+            if sel then
+                save_location_position_and_aim(sel)
+            end
+        end
+    end
+
+    -- Global Delete Location key
+    -- Logic: select/click a location in the list, press this bind, selected loc is deleted.
+    if not ui.renaming and not ui.binding then
+        local delete_key = ui.settings.delete_key
+        if delete_key and delete_key ~= 0 and input.IsButtonPressed(delete_key) and not osnova_key_is_suppressed(delete_key) then
+            local locs = get_current_locations()
+            if ui.selected_location > 0 and locs[ui.selected_location] then
+                local deleted_name = locs[ui.selected_location].name or "Location"
+                table.remove(locs, ui.selected_location)
+                if ui.selected_location > #locs then
+                    ui.selected_location = #locs
+                end
+                set_current_locations(locs)
+                sync_current_locations()
+
+            end
+        end
+    end
+
+    if not menu_active or not ui.open then return end
+
+    process_combo_input()
+    process_feature_multibox_input()
+    process_visual_multibox_input()
+
+    -- If the Enable Helper mode popup is open, consume clicks inside it before
+    -- the normal controls draw. This prevents buttons/sliders underneath the
+    -- popup from being clicked through.
+    if ui.popup.open and input.IsButtonPressed(1) then
+        local px, py, pw, ph = ui.popup.x, ui.popup.y, 142, 88
+        if mouse_in(px, py, pw, ph) then
+            ui._combo_blocked = true
+        end
+    end
+
+    if ui.renaming then
+        for i = 32, 126 do
+            if input.IsButtonPressed(i) then
+                ui.rename_buf = ui.rename_buf .. string.char(i)
+            end
+        end
+        if input.IsButtonPressed(8) then
+            ui.rename_buf = ui.rename_buf:sub(1, -2)
+        end
+        if input.IsButtonPressed(13) then
+            local locs = get_current_locations()
+            if ui.rename_target == "location" and ui.selected_location > 0 then
+                locs[ui.selected_location].name = ui.rename_buf
+                osnova_save_database()
+            end
+            ui.renaming = false
+        end
+    end
+
+    if ui.binding then
+        osnova_block_bind_movement()
+        for i = 1, 255 do
+            if input.IsButtonPressed(i) then
+                local key = (i == 27) and 0 or i
+                if ui.bind_target == "main_enable" then
+                    ui.settings.key = key
+                elseif ui.bind_target == "global_save" then
+                    ui.settings.save_key = key
+                elseif ui.bind_target == "global_auto" then
+                    ui.settings.auto_key = key
+                elseif ui.bind_target == "delete_location" then
+                    ui.settings.delete_key = key
+                end
+                osnova_suppress_bound_key(key)
+                osnova_block_bind_movement()
+                ui.bind_click_block = true
+                ui.binding = false
+                break
+            end
+        end
+    end
+
+    local mx, my = input.GetMousePos()
+    if input.IsButtonDown(1) and not ui.popup.open and not ui.binding and not ui.active_slider and not ui.renaming and not ui.active_combo then
+        if not ui.dragging and mouse_in(ui.x, ui.y, ui.w, 35) then
+            ui.dragging = true
+            ui.dx = mx - ui.x
+            ui.dy = my - ui.y
+        end
+        if ui.dragging then
+            ui.x = mx - ui.dx
+            ui.y = my - ui.dy
+        end
+    else
+        ui.dragging = false
+    end
+
+    local pad = 15
+    local inner_w = ui.w - pad * 2
+
+    -- main window: rounded, shadowed, cleaner header
+    draw.Color(0, 0, 0, 160)
+    draw.ShadowRect(ui.x - 2, ui.y - 2, ui.x + ui.w + 2, ui.y + ui.h + 2, 22)
+    draw.Color(9, 9, 10, 252)
+    draw.RoundedRectFill(ui.x, ui.y, ui.x + ui.w, ui.y + ui.h, 8, 8, 8, 8, 8)
+    draw.Color(45, 45, 48, 255)
+    draw.RoundedRect(ui.x, ui.y, ui.x + ui.w, ui.y + ui.h, 8, 8, 8, 8, 8)
+
+    -- header
+    draw.Color(16, 16, 18, 255)
+    draw.RoundedRectFill(ui.x + 1, ui.y + 1, ui.x + ui.w - 1, ui.y + 38, 8, 8, 8, 0, 0)
+    draw.Color(255, 255, 255, 230)
+    draw.FilledRect(ui.x + 14, ui.y + 36, ui.x + ui.w - 14, ui.y + 38)
+
+    draw.SetFont(f_title)
+    draw.Color(255, 255, 255, 255)
+    draw.Text(ui.x + 16, ui.y + 10, "OSNOVA")
+    draw.SetFont(f_bind)
+    draw.Color(150, 150, 150, 255)
+    draw.Text(ui.x + 82, ui.y + 13, "Grenade + Movement Helper")
+
+    local tabs = {"MAIN", "LOCATION"}
+    if ui.tab > 2 then ui.tab = 1 end
+
+    local tab_w = 104
+    local tab_gap = 10
+    local tab_total_w = #tabs * tab_w + (#tabs - 1) * tab_gap
+    local tab_start_x = ui.x + ui.w - 16 - tab_total_w
+
+    for i, n in ipairs(tabs) do
+        local tx = tab_start_x + (i - 1) * (tab_w + tab_gap)
+        local ty = ui.y + 8
+        local tw = tab_w
+        local th = 22
+        local selected = ui.tab == i
+        local hover = mouse_in(tx, ty, tw, th)
+
+        draw.Color(selected and 245 or (hover and 34 or 22), selected and 245 or (hover and 34 or 22), selected and 245 or (hover and 34 or 22), 255)
+        draw.RoundedRectFill(tx, ty, tx + tw, ty + th, 5, 5, 5, 5, 5)
+        draw.Color(selected and 255 or 48, selected and 255 or 48, selected and 255 or 48, 255)
+        draw.RoundedRect(tx, ty, tx + tw, ty + th, 5, 5, 5, 5, 5)
+
+        draw.SetFont(f_tabs)
+        draw.Color(selected and 15 or 170, selected and 15 or 170, selected and 15 or 170, 255)
+        local tnw, tnh = draw.GetTextSize(n)
+        draw.Text(tx + (tw - tnw) / 2, ty + (th - tnh) / 2, n)
+
+        if hover and input.IsButtonPressed(1) and not ui.active_combo and not ui._combo_blocked then
+            ui.tab = i
+            ui._combo_blocked = true
+        end
+    end
+
+    local cx = ui.x + pad
+    local cy = ui.y + 50
+    local cw = inner_w
+    local ch = ui.h - 65
+
+    local gap = 12
+    local col_w = (cw - gap) / 2
+
+    if ui.tab == 1 then
+        local lx = cx
+        local ly = cy
+
+        draw.Color(0, 0, 0, 70)
+        draw.ShadowRect(lx, ly, lx + col_w, ly + ch, 10)
+        draw.Color(12, 12, 13, 245)
+        draw.RoundedRectFill(lx, ly, lx + col_w, ly + ch, 6, 6, 6, 6, 6)
+        draw.Color(unpack(ui.clr.outline))
+        draw.RoundedRect(lx, ly, lx + col_w, ly + ch, 6, 6, 6, 6, 6)
+        draw.Color(12, 12, 13, 255)
+        draw.FilledRect(lx + 10, ly - 5, lx + 80, ly + 5)
+        draw.SetFont(f_group)
+        draw.Color(255, 255, 255)
+        draw.Text(lx + 14, ly - 7, "GENERAL")
+
+        local item_x = lx + 10
+        local item_w = col_w - 20
+
+        draw_bind(item_x, ly + 25, item_w, "Enable Helper", "main_enable", ui.settings.key)
+        draw_bind(item_x, ly + 47, item_w, "Save Location Key", "global_save", ui.settings.save_key)
+        draw_bind(item_x, ly + 69, item_w, "Record Key", "global_auto", ui.settings.auto_key)
+        draw_bind(item_x, ly + 91, item_w, "Delete Location Key", "delete_location", ui.settings.delete_key)
+
+        local rx = lx + col_w + gap
+        local ry = cy
+
+        draw.Color(0, 0, 0, 70)
+        draw.ShadowRect(rx, ry, rx + col_w, ry + ch, 10)
+        draw.Color(12, 12, 13, 245)
+        draw.RoundedRectFill(rx, ry, rx + col_w, ry + ch, 6, 6, 6, 6, 6)
+        draw.Color(unpack(ui.clr.outline))
+        draw.RoundedRect(rx, ry, rx + col_w, ry + ch, 6, 6, 6, 6, 6)
+        draw.Color(12, 12, 13, 255)
+        draw.FilledRect(rx + 10, ry - 5, rx + 70, ry + 5)
+        draw.SetFont(f_group)
+        draw.Color(255, 255, 255)
+        draw.Text(rx + 14, ry - 7, "OTHERS")
+
+        local r_item_x = rx + 10
+        local r_item_w = col_w - 20
+
+        draw_feature_multibox(r_item_x, ry + 25, r_item_w, "Enabled Features")
+        draw_visual_multibox(r_item_x, ry + 70, r_item_w, "Visual Features")
+        draw_slider(r_item_x, ry + 127, r_item_w, "Smoothness", ui.settings, "smooth", 0, 100)
+        draw_slider(r_item_x, ry + 167, r_item_w, "Reaction Time", ui.settings, "reaction", 0, 1000, "ms")
+        draw_slider(r_item_x, ry + 207, r_item_w, "Aim FOV", ui.settings, "fov", 40, 600, "px")
+        draw_toggle(r_item_x, ry + 247, r_item_w, "Show All Maps", ui, "show_all_maps")
+    end
+
+    if ui.tab == 2 then
+        draw.SetFont(f_bind)
+        draw.Color(140, 140, 140, 255)
+        draw.Text(cx, cy - 18, "MAP: " .. tostring(ui.current_map) .. (ui.show_all_maps and "  | showing all maps" or ""))
+        local db_w = col_w + 20
+
+        if not ui.edit_mode then
+            -- ===== LEFT: GRENADE GROUPS + MOVEMENT HELPER =====
+            -- The old full-height grenade groups list is now split horizontally:
+            -- top half = grenade groups, bottom half = Movement Helper groups.
+            draw.Color(unpack(ui.clr.outline))
+            draw.OutlinedRect(cx, cy, cx + db_w, cy + ch)
+
+            local left_list_x = cx + 10
+            local left_list_w = db_w - 20
+            local half_list_h = math.floor((ch - 55) / 2)
+            local group_list_y = cy + 15
+            local movement_title_y = group_list_y + half_list_h + 18
+            local movement_list_y = movement_title_y + 22
+            local movement_list_h = ch - (movement_list_y - cy) - 10
+
+            draw.Color(unpack(ui.clr.bg))
+            draw.FilledRect(cx + 10, cy - 7, cx + 112, cy + 5)
+            draw.SetFont(f_group)
+            draw.Color(255, 255, 255)
+            draw.Text(cx + 14, cy - 7, "GRENADE GROUPS")
+
+            local group_list = {}
+            for def, g in pairs(ui.groups) do
+                table.insert(group_list, { def = def, name = g.name .. "  (" .. osnova_count_locations_for_current_view("group", def) .. ")" })
+            end
+            table.sort(group_list, function(a, b) return a.def < b.def end)
+
+            draw_listbox(left_list_x, group_list_y, left_list_w, half_list_h, group_list, "group")
+
+            draw.Color(unpack(ui.clr.outline))
+            draw.Line(cx + 10, movement_title_y - 8, cx + db_w - 10, movement_title_y - 8)
+
+            draw.Color(unpack(ui.clr.bg))
+            draw.FilledRect(cx + 10, movement_title_y - 7, cx + 128, movement_title_y + 5)
+            draw.SetFont(f_group)
+            draw.Color(255, 255, 255)
+            draw.Text(cx + 14, movement_title_y - 7, "MOVEMENT HELPER")
+
+            local movement_list = {}
+            for id, helper in pairs(ui.movement_helpers) do
+                table.insert(movement_list, { id = id, name = helper.name .. "  (" .. osnova_count_locations_for_current_view("movement", id) .. ")" })
+            end
+            table.sort(movement_list, function(a, b) return a.id < b.id end)
+
+            draw_listbox(left_list_x, movement_list_y, left_list_w, movement_list_h, movement_list, "movement")
+
+            -- ===== RIGHT: LOCATIONS of the selected group =====
+            local rx = cx + db_w + gap
+            local rw = cw - db_w - gap
+
+            draw.Color(unpack(ui.clr.outline))
+            draw.OutlinedRect(rx, cy, rx + rw, cy + ch)
+            draw.Color(unpack(ui.clr.bg))
+            draw.FilledRect(rx + 10, cy - 5, rx + 50, cy + 5)
+            draw.SetFont(f_group)
+            draw.Color(255, 255, 255)
+            draw.Text(rx + 14, cy - 7, "LOCATIONS")
+
+            local locs = get_current_locations()
+            draw_listbox(rx + 10, cy + 15, rw - 20, ch - 110, locs, "location")
+
+            -- bottom action buttons
+            local fbw = rw - 20
+            local fy = cy + ch - 74
+
+            if ui.selected_browser == "movement" then
+                -- Movement Helper is recorder-only: no Edit Settings page here.
+                -- Create/Rename are allowed for organizing routes; recording itself is one-button.
+                local mrec = rawget(_G, "MREC")
+                local rec_label = (mrec and mrec.active) and "Stop Record" or "Record"
+
+                draw_button(rx + 10, fy, fbw / 2 - 2, 22, "Create", function()
+                    osnova_create_current_location()
+                end)
+                draw_button(rx + 10 + fbw / 2 + 2, fy, fbw / 2 - 2, 22, "Rename", function()
+                    if ui.selected_location > 0 then
+                        ui.renaming = true; ui.rename_target = "location"
+                        ui.rename_buf = locs[ui.selected_location].name or "Movement Loc"
+                    end
+                end)
+
+                draw_button(rx + 10, fy + 26, fbw / 2 - 2, 22, rec_label, function()
+                    local fn = rawget(_G, "osnova_movement_record_toggle")
+                    if fn then fn() end
+                end)
+
+                draw_button(rx + 10 + fbw / 2 + 2, fy + 26, fbw / 2 - 2, 22, "Delete", function()
+                    if ui.selected_location > 0 then
+                        table.remove(locs, ui.selected_location)
+                        ui.selected_location = 0
+                        set_current_locations(locs); sync_current_locations()
+                    end
+                end)
+            else
+                draw_button(rx + 10, fy, fbw / 2 - 2, 22, "Create", function()
+                    osnova_create_current_location()
+                end)
+                draw_button(rx + 10 + fbw / 2 + 2, fy, fbw / 2 - 2, 22, "Rename", function()
+                    if ui.selected_location > 0 then
+                        ui.renaming = true; ui.rename_target = "location"
+                        ui.rename_buf = locs[ui.selected_location].name or "Loc"
+                    end
+                end)
+                draw_button(rx + 10, fy + 26, fbw / 2 - 2, 22, "Delete", function()
+                    if ui.selected_location > 0 then
+                        table.remove(locs, ui.selected_location)
+                        ui.selected_location = 0
+                        set_current_locations(locs); sync_current_locations()
+                    end
+                end)
+                draw_button(rx + 10 + fbw / 2 + 2, fy + 26, fbw / 2 - 2, 22, "Edit Settings", function()
+                    if ui.selected_location > 0 then ui.edit_mode = true end
+                end)
+            end
+
+        else
+            -- ===== EDIT MODE: left = LOCATIONS, right = EDITING =====
+            local lx = cx
+            local ly = cy
+
+            draw.Color(unpack(ui.clr.outline))
+            draw.OutlinedRect(lx, ly, lx + col_w, ly + ch)
+            draw.Color(unpack(ui.clr.bg))
+            draw.FilledRect(lx + 10, ly - 5, lx + 90, ly + 5)
+            draw.SetFont(f_group)
+            draw.Color(255, 255, 255)
+            draw.Text(lx + 14, ly - 7, "LOCATIONS")
+
+            local locs = get_current_locations()
+            draw_listbox(lx + 10, ly + 15, col_w - 20, ch - 25, locs, "location")
+
+            local rx = lx + col_w + gap
+            local ry = cy
+
+            draw.Color(unpack(ui.clr.outline))
+            draw.OutlinedRect(rx, ry, rx + col_w, ry + ch)
+            draw.Color(unpack(ui.clr.bg))
+            draw.FilledRect(rx + 10, ry - 5, rx + 70, ry + 5)
+            draw.SetFont(f_group)
+            draw.Color(255, 255, 255)
+            draw.Text(rx + 14, ry - 7, "EDITING")
+
+            local r_item_x = rx + 8
+            local r_item_w = col_w - 16
+
+            if ui.selected_location > 0 then
+                local loc = locs[ui.selected_location]
+                local ey = ry + 15
+
+                -- active container: grenade group or Movement Helper group
+                draw.SetFont(f_main)
+                draw.Color(200, 200, 200, 255)
+                local gname = "?"
+                local prefix = "Group: "
+                if ui.selected_browser == "movement" then
+                    local mh = ui.movement_helpers[ui.selected_movement_helper]
+                    gname = mh and mh.name or "?"
+                    prefix = "Movement: "
+                else
+                    local grp = ui.groups[ui.selected_group]
+                    gname = grp and grp.name or "?"
+                end
+                draw.Text(r_item_x, ey, prefix .. gname)
+                ey = ey + 22
+
+                if ui.selected_browser == "movement" and loc.movement_macro then
+                    draw.SetFont(f_main)
+                    draw.Color(unpack(ui.clr.text))
+                    draw.Text(r_item_x, ey, "Recorded Movement")
+                    ey = ey + 18
+
+                    draw.SetFont(f_bind)
+                    draw.Color(unpack(ui.clr.text_dim))
+                    local last_t = loc.movement_macro[#loc.movement_macro] and loc.movement_macro[#loc.movement_macro].t or 0
+                    draw.Text(r_item_x, ey, #loc.movement_macro .. " events, " .. string.format("%.0f", last_t) .. "ms")
+                    ey = ey + 26
+
+                    draw_button(r_item_x, ey, r_item_w, 22, "Clear Movement", function()
+                        loc.movement_macro = nil
+                    end)
+                    ey = ey + 30
+                elseif loc.macro then
+                    draw.SetFont(f_main)
+                    draw.Color(unpack(ui.clr.text))
+                    draw.Text(r_item_x, ey, "Recorded Macro")
+                    ey = ey + 18
+
+                    draw.SetFont(f_bind)
+                    draw.Color(unpack(ui.clr.text_dim))
+                    local last_t = loc.macro[#loc.macro] and loc.macro[#loc.macro].t or 0
+                    draw.Text(r_item_x, ey, #loc.macro .. " events, " .. string.format("%.0f", last_t) .. "ms")
+                    ey = ey + 26
+
+                    draw_button(r_item_x, ey, r_item_w, 22, "Clear Macro", function()
+                        loc.macro = nil
+                    end)
+                    ey = ey + 30
+                else
+                    draw_combo(r_item_x, ey, r_item_w, "Movement Dir", loc, "m_dir", {"None", "Forward", "Backward", "Left", "Right"})
+                    ey = ey + 38
+
+                    draw_combo(r_item_x, ey, r_item_w, "Throw Action", loc, "t_type", {"Stand", "Crouch", "Jump", "J-Throw"})
+                    ey = ey + 40
+
+                    draw_toggle(r_item_x, ey, r_item_w, "Walk Enable", loc, "e_walk")
+                    ey = ey + 20
+                    if loc.e_walk then
+                        draw_slider(r_item_x, ey, r_item_w, "Walk Time", loc, "run_t", 0, 2000, "ms")
+                        ey = ey + 36
+                    end
+
+                    draw_toggle(r_item_x, ey, r_item_w, "Crouch Enable", loc, "e_crouch")
+                    ey = ey + 20
+                    if loc.e_crouch then
+                        draw_slider(r_item_x, ey, r_item_w, "Crouch Time", loc, "crouch_t", 0, 2000, "ms")
+                        ey = ey + 36
+                    end
+
+                    draw_toggle(r_item_x, ey, r_item_w, "Jump Enable", loc, "e_jump")
+                    ey = ey + 20
+                    if loc.e_jump then
+                        draw_slider(r_item_x, ey, r_item_w, "Jump Delay", loc, "jump_d", 0, 500, "ms")
+                        ey = ey + 36
+                    end
+
+                    draw_toggle(r_item_x, ey, r_item_w, "Auto Throw", loc, "e_throw")
+                    ey = ey + 20
+                    if loc.e_throw then
+                        draw_slider(r_item_x, ey, r_item_w, "Throw Delay", loc, "throw_d", 0, 500, "ms")
+                        ey = ey + 36
+                    end
+
+                    local rec_label = (ui.selected_browser == "movement") and "Record Movement" or "Record Macro"
+                    draw_button(r_item_x, ey, r_item_w, 22, rec_label, function()
+                        if ui.selected_browser == "movement" then
+                            osnova_movement_record_toggle()
+                        else
+                            if REC.active then
+                                osnova_record_stop(false)
+                            else
+                                local s = get_current_locations()[ui.selected_location]
+                                if s then osnova_record_start(s) end
+                            end
+                        end
+                    end)
+                    ey = ey + 30
+                end
+            end
+
+            local fy = ry + ch - 72
+            local fbw = col_w - 16
+            draw_button(rx + 8, fy, fbw / 2 - 2, 22, "Create", function()
+                osnova_create_current_location()
+            end)
+            draw_button(rx + 8 + fbw / 2 + 2, fy, fbw / 2 - 2, 22, "Rename", function()
+                if ui.selected_location > 0 then
+                    ui.renaming = true; ui.rename_target = "location"
+                    ui.rename_buf = locs[ui.selected_location].name or "Loc"
+                end
+            end)
+            draw_button(rx + 8, fy + 24, fbw, 22, "Delete Location", function()
+                if ui.selected_location > 0 then
+                    table.remove(locs, ui.selected_location)
+                    ui.selected_location = 0
+                    set_current_locations(locs); sync_current_locations()
+                end
+            end)
+            draw_button(rx + 8, fy + 48, fbw, 22, "EXIT EDIT", function()
+                ui.edit_mode = false
+            end)
+        end
+    end
+
+    render_active_combo()
+    render_feature_multibox()
+    render_visual_multibox()
+
+    if ui.popup.open then
+        local px, py, pw, ph = ui.popup.x, ui.popup.y, 142, 88
+        draw.Color(0, 0, 0, 125)
+        draw.ShadowRect(px, py, px + pw, py + ph, 14)
+        draw.Color(13, 13, 14, 252)
+        draw.RoundedRectFill(px, py, px + pw, py + ph, 7, 7, 7, 7, 7)
+        draw.Color(55, 55, 58, 255)
+        draw.RoundedRect(px, py, px + pw, py + ph, 7, 7, 7, 7, 7)
+
+        draw.SetFont(f_bind)
+        draw.Color(150, 150, 150, 255)
+        draw.Text(px + 10, py + 8, "Enable mode")
+
+        local modes = {
+            { name = "Always On", desc = "no key" },
+            { name = "Toggle", desc = "press" },
+            { name = "Hold", desc = "hold" },
+        }
+
+        for i, v in ipairs(modes) do
+            local iy = py + 26 + (i - 1) * 19
+            local sel = ui.settings.mode == (i - 1)
+            local hov = mouse_in(px + 6, iy, pw - 12, 18)
+
+            if sel then
+                -- selected mode: soft gray highlight, no checkbox/checkmark
+                draw.Color(72, 72, 76, 235)
+                draw.RoundedRectFill(px + 6, iy, px + pw - 6, iy + 18, 4, 4, 4, 4, 4)
+                draw.Color(105, 105, 110, 255)
+                draw.RoundedRect(px + 6, iy, px + pw - 6, iy + 18, 4, 4, 4, 4, 4)
+            elseif hov then
+                draw.Color(255, 255, 255, 14)
+                draw.RoundedRectFill(px + 6, iy, px + pw - 6, iy + 18, 4, 4, 4, 4, 4)
+            end
+
+            draw.SetFont(f_bind)
+            draw.Color(sel and 235 or 210, sel and 235 or 210, sel and 235 or 210, 255)
+            draw.Text(px + 14, iy + 3, v.name)
+            draw.Color(sel and 170 or 105, sel and 170 or 105, sel and 170 or 105, 255)
+            local dw = draw.GetTextSize(v.desc)
+            draw.Text(px + pw - 12 - dw, iy + 3, v.desc)
+
+            if hov and input.IsButtonPressed(1) then
+                ui.settings.mode = i - 1
+                ui.popup.open = false
+                ui._combo_blocked = true
+            end
+        end
+
+        if input.IsButtonPressed(1) and not mouse_in(px, py, pw, ph) then
+            ui.popup.open = false
+            ui._combo_blocked = true
+        end
+    end
+end)
+
+-- All the auto-walk, aim, throw, macro logic remains almost identical
+-- (only minor updates to use get_current_locations() where needed)
+
+-- ==================== AUTO WALK / AIM / THROW / MACRO (kept from original) ====================
+
+local AUTO_WALK_RADIUS = 20
+local AUTO_WALK_STOP_DIST = 4
+local AUTO_WALK_SLOW_RADIUS = 130
+
+local ARRIVED_DIST = AUTO_WALK_STOP_DIST
+local ARRIVED_STOP_SPEED = 5
+
+local function osnova_get_speed2d(local_player)
+    local speed2d = 0
+    pcall(function()
+        local vel = local_player:GetPropVector("m_vecVelocity") or local_player:GetPropVector("localdata", "m_vecVelocity")
+        if vel then
+            speed2d = vel.Length2D and vel:Length2D() or math.sqrt((vel.x or 0) ^ 2 + (vel.y or 0) ^ 2)
+        end
+    end)
+    return speed2d
+end
+
+local AUTO_WALK_PRESS_TH = 0.55
+local AUTO_WALK_RELEASE_TH = 0.20
+
+local AW_FFI = rawget(_G, "ffi")
+pcall(function()
+    if AW_FFI then
+        AW_FFI.cdef[[
+            void keybd_event(unsigned char bVk, unsigned char bScan, unsigned long dwFlags, unsigned long dwExtraInfo);
+            short GetAsyncKeyState(int vKey);
+            void mouse_event(unsigned long dwFlags, unsigned long dx, unsigned long dy, unsigned long dwData, unsigned long dwExtraInfo);
+        ]]
+    end
+end)
+
+local AW_VK_W, AW_VK_A, AW_VK_S, AW_VK_D, AW_VK_SHIFT = 0x57, 0x41, 0x53, 0x44, 0x10
+local AW_VK_SPACE, AW_VK_CTRL = 0x20, 0x11
+local AW_VK_LBUTTON = 0x01
+local AW_KEYUP = 0x0002
+local MOUSEEVENTF_LEFTDOWN = 0x0002
+local MOUSEEVENTF_LEFTUP = 0x0004
+
+local function aw_mouse_left(down)
+    if not AW_FFI then return end
+    pcall(function() AW_FFI.C.mouse_event(down and MOUSEEVENTF_LEFTDOWN or MOUSEEVENTF_LEFTUP, 0, 0, 0, 0) end)
+end
+
+local AW = {
+    active = false,
+    saved = { w = false, a = false, s = false, d = false, shift = false },
+    keys = { w = false, a = false, s = false, d = false, shift = false },
+    prev = { w = false, a = false, s = false, d = false },
+}
+
+local function aw_key(vk, down)
+    if not AW_FFI then return end
+    pcall(function() AW_FFI.C.keybd_event(vk, 0, down and 0 or AW_KEYUP, 0) end)
+end
+
+local function aw_down(vk)
+    if not AW_FFI then return false end
+    local ok, v = pcall(function() return AW_FFI.C.GetAsyncKeyState(vk) end)
+    return ok and v and bit.band(v, 0x8000) ~= 0 or false
+end
+
+local function aw_user_is_moving()
+    return (aw_down(AW_VK_W) and not AW.keys.w)
+        or (aw_down(AW_VK_A) and not AW.keys.a)
+        or (aw_down(AW_VK_S) and not AW.keys.s)
+        or (aw_down(AW_VK_D) and not AW.keys.d)
+end
+
+local function aw_save_user_keys()
+    AW.saved.w = aw_down(AW_VK_W) and not AW.keys.w
+    AW.saved.a = aw_down(AW_VK_A) and not AW.keys.a
+    AW.saved.s = aw_down(AW_VK_S) and not AW.keys.s
+    AW.saved.d = aw_down(AW_VK_D) and not AW.keys.d
+end
+
+local function aw_restore_user_keys()
+    if AW.saved.w then aw_key(AW_VK_W, true) end
+    if AW.saved.a then aw_key(AW_VK_A, true) end
+    if AW.saved.s then aw_key(AW_VK_S, true) end
+    if AW.saved.d then aw_key(AW_VK_D, true) end
+    AW.saved.w, AW.saved.a, AW.saved.s, AW.saved.d = false, false, false, false
+end
+
+local function aw_set_keys(w, s, a, d, walk)
+    if (w or s or a or d) and not AW.active then
+        aw_save_user_keys()
+        aw_key(AW_VK_W, false); aw_key(AW_VK_A, false)
+        aw_key(AW_VK_S, false); aw_key(AW_VK_D, false)
+        AW.keys.w, AW.keys.a, AW.keys.s, AW.keys.d = false, false, false, false
+        AW.active = true
+    end
+
+    if AW.keys.w and not w then aw_key(AW_VK_W, false); AW.keys.w = false end
+    if AW.keys.s and not s then aw_key(AW_VK_S, false); AW.keys.s = false end
+    if AW.keys.a and not a then aw_key(AW_VK_A, false); AW.keys.a = false end
+    if AW.keys.d and not d then aw_key(AW_VK_D, false); AW.keys.d = false end
+
+    if w then aw_key(AW_VK_W, true); AW.keys.w = true end
+    if s then aw_key(AW_VK_S, true); AW.keys.s = true end
+    if a then aw_key(AW_VK_A, true); AW.keys.a = true end
+    if d then aw_key(AW_VK_D, true); AW.keys.d = true end
+
+    if AW.keys.shift and not walk then aw_key(AW_VK_SHIFT, false); AW.keys.shift = false end
+    if walk and not AW.keys.shift then aw_key(AW_VK_SHIFT, true); AW.keys.shift = true end
+end
+
+local function aw_release()
+    if not AW.active then return end
+    aw_set_keys(false, false, false, false, false)
+    AW.active = false
+    AW.prev.w, AW.prev.a, AW.prev.s, AW.prev.d = false, false, false, false
+    aw_restore_user_keys()
+end
+
+-- Record system (kept)
+local RECORD_VK_LIST = {
+    { vk = AW_VK_W, id = "w" },
+    { vk = AW_VK_A, id = "a" },
+    { vk = AW_VK_S, id = "s" },
+    { vk = AW_VK_D, id = "d" },
+    { vk = AW_VK_SPACE, id = "space" },
+    { vk = AW_VK_CTRL, id = "ctrl" },
+    { vk = AW_VK_LBUTTON, id = "attack" },
+}
+
+local POST_THROW_RECORD_TIME = 2.0
+local CAMERA_SAMPLE_INTERVAL = 1 / 200
+
+local REC = {
+    active = false,
+    loc = nil,
+    start_time = 0,
+    events = nil,
+    down_state = {},
+    stop_at = nil,
+    last_cam_sample = nil,
+    last_pitch = nil,
+    last_yaw = nil,
+}
+
+local function osnova_record_stop(save)
+    if not REC.active then return end
+    if save and REC.loc then
+        REC.loc.macro = REC.events
+
+    end
+    REC.active = false
+    REC.loc = nil
+    REC.events = nil
+    REC.down_state = {}
+    REC.stop_at = nil
+end
+
+local osnova_record_camera
+local function osnova_record_start(loc)
+    if not loc then return end
+    save_location_position_and_aim(loc)
+    loc.macro = nil
+
+    REC.active = true
+    REC.loc = loc
+    REC.start_time = common.Time()
+    REC.events = {}
+    REC.down_state = {}
+    REC.stop_at = nil
+    REC.last_cam_sample = nil
+    REC.last_pitch = nil
+    REC.last_yaw = nil
+    for _, k in ipairs(RECORD_VK_LIST) do
+        REC.down_state[k.id] = false
+    end
+    osnova_record_camera(common.Time(), 0)
+end
+
+osnova_record_camera = function(now, t_ms)
+    if REC.last_cam_sample and (now - REC.last_cam_sample) < CAMERA_SAMPLE_INTERVAL then
+        return
+    end
+    REC.last_cam_sample = now
+
+    local view = nil
+    pcall(function() view = engine.GetViewAngles() end)
+    if not view then return end
+
+    local pitch = view.pitch or view.x or 0
+    local yaw = view.yaw or view.y or 0
+
+    if REC.last_pitch == nil or math.abs(osnova_angle_diff(REC.last_pitch, pitch)) > 0.01
+        or math.abs(osnova_angle_diff(REC.last_yaw, yaw)) > 0.01 then
+        REC.last_pitch = pitch
+        REC.last_yaw = yaw
+        table.insert(REC.events, { t = t_ms, key = "look", pitch = pitch, yaw = yaw })
+    end
+end
+
+-- ==================== MOVEMENT HELPER RECORDER ====================
+-- Same idea as grenade auto-record, but manual start/stop and no attack / throw.
+-- Press Record Movement Key once: create/select Knife location, save stand+aim dot,
+-- start recording movement + camera. Press it again: stop and save into the Knife loc.
+local MOVEMENT_RECORD_VK_LIST = {
+    { vk = AW_VK_W, id = "w" },
+    { vk = AW_VK_A, id = "a" },
+    { vk = AW_VK_S, id = "s" },
+    { vk = AW_VK_D, id = "d" },
+    { vk = AW_VK_SPACE, id = "space" },
+    { vk = AW_VK_CTRL, id = "ctrl" },
+}
+
+local MREC = {
+    active = false,
+    loc = nil,
+    start_time = 0,
+    events = nil,
+    down_state = {},
+    last_cam_sample = nil,
+    last_pitch = nil,
+    last_yaw = nil,
+}
+
+local function osnova_make_movement_location(idx)
+    return osnova_new_location("Movement Loc " .. tostring(idx or 1), true)
+end
+
+local function osnova_get_or_create_movement_location()
+    ui.selected_browser = "movement"
+    ui.selected_movement_helper = 1 -- Knife for now
+    sync_current_locations()
+
+    local locs = get_current_locations()
+    local loc = locs[ui.selected_location]
+
+    if not loc then
+        table.insert(locs, osnova_make_movement_location(#locs + 1))
+        ui.selected_location = #locs
+        set_current_locations(locs)
+        sync_current_locations()
+        loc = locs[ui.selected_location]
+    end
+
+    return loc
+end
+
+local function osnova_movement_record_camera(now, t_ms)
+    if MREC.last_cam_sample and (now - MREC.last_cam_sample) < CAMERA_SAMPLE_INTERVAL then
+        return
+    end
+    MREC.last_cam_sample = now
+
+    local view = nil
+    pcall(function() view = engine.GetViewAngles() end)
+    if not view then return end
+
+    local pitch = view.pitch or view.x or 0
+    local yaw = view.yaw or view.y or 0
+
+    if MREC.last_pitch == nil or math.abs(osnova_angle_diff(MREC.last_pitch, pitch)) > 0.01
+        or math.abs(osnova_angle_diff(MREC.last_yaw, yaw)) > 0.01 then
+        MREC.last_pitch = pitch
+        MREC.last_yaw = yaw
+        table.insert(MREC.events, { t = t_ms, key = "look", pitch = pitch, yaw = yaw })
+    end
+end
+
+local function osnova_movement_record_start()
+    if not osnova_movement_feature_enabled() then return end
+    local loc = osnova_get_or_create_movement_location()
+    if not loc then return end
+
+    -- This is what creates the visible world dot + aim dot for Movement Helper.
+    save_location_position_and_aim(loc)
+    loc.movement_macro = nil
+
+    MREC.active = true
+    MREC.loc = loc
+    MREC.start_time = common.Time()
+    MREC.events = {}
+    MREC.down_state = {}
+    MREC.last_cam_sample = nil
+    MREC.last_pitch = nil
+    MREC.last_yaw = nil
+
+    for _, k in ipairs(MOVEMENT_RECORD_VK_LIST) do
+        MREC.down_state[k.id] = false
+    end
+
+    osnova_movement_record_camera(common.Time(), 0)
+
+end
+
+local function osnova_movement_record_stop(save)
+    if not MREC.active then return end
+
+    if save and MREC.loc then
+        MREC.loc.movement_macro = MREC.events or {}
+
+    else
+
+    end
+
+    MREC.active = false
+    MREC.loc = nil
+    MREC.events = nil
+    MREC.down_state = {}
+    MREC.last_cam_sample = nil
+    MREC.last_pitch = nil
+    MREC.last_yaw = nil
+end
+
+local function osnova_movement_record_toggle()
+    if MREC.active then
+        osnova_movement_record_stop(true)
+    else
+        osnova_movement_record_start()
+    end
+end
+
+-- The edit-mode UI callback is declared earlier in the file, so it resolves
+-- recorder symbols through _G. Expose only these small hooks for those buttons.
+_G.REC = REC
+_G.MREC = MREC
+_G.osnova_record_stop = osnova_record_stop
+_G.osnova_record_start = osnova_record_start
+_G.osnova_movement_record_toggle = osnova_movement_record_toggle
+
+local function osnova_movement_record_tick()
+    if not MREC.active then return end
+
+    local now = common.Time()
+    local t_ms = (now - MREC.start_time) * 1000
+
+    osnova_movement_record_camera(now, t_ms)
+
+    for _, k in ipairs(MOVEMENT_RECORD_VK_LIST) do
+        local down = aw_down(k.vk)
+        if down ~= MREC.down_state[k.id] then
+            MREC.down_state[k.id] = down
+            table.insert(MREC.events, { t = t_ms, key = k.id, down = down })
+        end
+    end
+end
+
+local function osnova_record_tick()
+    if not REC.active then return end
+
+    local now = common.Time()
+    local t_ms = (now - REC.start_time) * 1000
+
+    osnova_record_camera(now, t_ms)
+
+    for _, k in ipairs(RECORD_VK_LIST) do
+        local down = aw_down(k.vk)
+        if down ~= REC.down_state[k.id] then
+            REC.down_state[k.id] = down
+            table.insert(REC.events, { t = t_ms, key = k.id, down = down })
+
+            if k.id == "attack" and not down and not REC.stop_at then
+                REC.stop_at = now + POST_THROW_RECORD_TIME
+            end
+        end
+    end
+
+    if REC.stop_at and now >= REC.stop_at then
+        osnova_record_stop(true)
+    end
+end
+
+callbacks.Register("Draw", "osnova_gh_record", function()
+    -- One combined Record Key:
+    --   knife  -> Movement Helper record toggle
+    --   grenade -> Grenade record toggle
+    local key = ui.settings.auto_key
+    if key and key ~= 0 and not ui.renaming and not ui.binding and not osnova_key_is_suppressed(key) then
+        if input.IsButtonPressed(key) then
+            if MREC.active then
+                osnova_movement_record_stop(true)
+            elseif REC.active then
+                osnova_record_stop(false)
+            else
+                local helper_id = osnova_active_movement_helper_id()
+                local grenade_def = osnova_canonical_grenade_def(osnova_active_grenade_def())
+
+                if helper_id and osnova_movement_feature_enabled() then
+                    ui.selected_browser = "movement"
+                    ui.selected_movement_helper = helper_id
+                    ui.edit_mode = false
+                    sync_current_locations()
+                    osnova_movement_record_start()
+                elseif grenade_def and ui.groups[grenade_def] and osnova_grenade_feature_enabled(grenade_def) then
+                    ui.selected_browser = "group"
+                    ui.selected_group = grenade_def
+                    sync_current_locations()
+                    local sel = osnova_get_or_create_selected_location()
+                    if sel then osnova_record_start(sel) end
+                end
+            end
+        end
+    end
+
+    osnova_record_tick()
+    osnova_movement_record_tick()
+end)
+
+callbacks.Register("Unload", "osnova_gh_record_unload", function()
+    osnova_record_stop(false)
+    osnova_movement_record_stop(false)
+end)
+
+local NADE_TYPE_DEFS = {
+    [2] = { [43] = true },
+    [3] = { [44] = true },
+    [4] = { [45] = true },
+    [5] = { [46] = true, [48] = true },
+    [6] = { [47] = true },
+}
+
+-- Auto walk (slightly updated to use current group)
+local function osnova_find_target_location(origin, now)
+    now = now or common.Time()
+
+    -- Pick the spot we're looking at (inside the FOV cone), then only engage
+    -- when we're actually standing on/near its ground point. This keeps the
+    -- short-range walk/aim behaviour but disambiguates overlapping spots by
+    -- where you point, not by which one was created last.
+    local loc = osnova_select_target(origin)
+    if not loc or not (loc.pos_x and loc.pos_y) then return nil, nil end
+
+    local dx = loc.pos_x - origin.x
+    local dy = loc.pos_y - origin.y
+    local dist2d = math.sqrt(dx * dx + dy * dy)
+    if dist2d > AUTO_WALK_RADIUS then return nil, nil end
+
+    local blocked = loc.no_aim_until and now < loc.no_aim_until
+    if blocked then return nil, nil end
+
+    return loc, dist2d
+end
+
+-- True while any location is actively replaying a recorded macro.
+-- Used to keep the auto-walk / auto-aim from fighting the replayed input,
+-- so a macro replays the movement and camera exactly (toch-v-toch).
+local function osnova_any_macro_playing()
+    for _, md in pairs(ui.map_data) do
+        if md.groups then
+            for _, grp in pairs(md.groups) do
+                for _, l in ipairs(grp.locations or {}) do
+                    if l.seq_active and l.macro then return true end
+                end
+            end
+        end
+        if md.movement_helpers then
+            for _, mh in pairs(md.movement_helpers) do
+                for _, l in ipairs(mh.locations or {}) do
+                    if l.movement_play_active and l.movement_macro then return true end
+                end
+            end
+        end
+    end
+    return false
+end
+
+local function osnova_auto_walk_to_location()
+    osnova_update_helper_active()
+    if not ui.settings.active then aw_release(); return end
+    local action_locs = osnova_get_action_locations()
+    if not action_locs or #action_locs == 0 then aw_release(); return end
+    -- don't fight the macro replay: it owns the movement keys now
+    if osnova_any_macro_playing() then aw_release(); return end
+
+    local local_player = entities.GetLocalPlayer()
+    if not local_player or not local_player:IsAlive() then aw_release(); return end
+
+    if aw_user_is_moving() then
+        aw_release()
+        return
+    end
+
+    local origin = local_player:GetAbsOrigin()
+    local target_loc, target_dist = osnova_find_target_location(origin)
+
+    if not target_loc then aw_release(); return end
+    if target_dist < AUTO_WALK_STOP_DIST then
+        aw_release()
+        return
+    end
+
+    local view_angles = nil
+    pcall(function() view_angles = engine.GetViewAngles() end)
+    if not view_angles then
+        pcall(function() view_angles = local_player:GetAbsAngles() end)
+    end
+    view_angles = view_angles or { yaw = 0 }
+
+    local yaw = math.rad(view_angles.yaw or view_angles.y or 0)
+    local fx, fy = math.cos(yaw), math.sin(yaw)
+    local rx, ry = math.sin(yaw), -math.cos(yaw)
+
+    local dx = target_loc.pos_x - origin.x
+    local dy = target_loc.pos_y - origin.y
+    local dlen = math.sqrt(dx * dx + dy * dy)
+    if dlen < 0.01 then aw_release(); return end
+    dx, dy = dx / dlen, dy / dlen
+
+    local rel_forward = dx * fx + dy * fy
+    local rel_side = dx * rx + dy * ry
+
+    local function held(prev, val)
+        if prev then
+            return val > AUTO_WALK_RELEASE_TH
+        else
+            return val > AUTO_WALK_PRESS_TH
+        end
+    end
+
+    local press_w = held(AW.prev.w, rel_forward)
+    local press_s = held(AW.prev.s, -rel_forward)
+    local press_d = held(AW.prev.d, rel_side)
+    local press_a = held(AW.prev.a, -rel_side)
+
+    if press_w and press_s then press_s = false end
+    if press_a and press_d then press_d = false end
+
+    AW.prev.w, AW.prev.a, AW.prev.s, AW.prev.d = press_w, press_a, press_s, press_d
+
+    local walk_slow = target_dist < AUTO_WALK_SLOW_RADIUS
+    aw_set_keys(press_w, press_s, press_a, press_d, walk_slow)
+end
+
+callbacks.Register("Draw", "osnova_gh_autowalk", function()
+    local ok, err = pcall(osnova_auto_walk_to_location)
+
+end)
+callbacks.Register("Unload", "osnova_gh_autowalk_unload", aw_release)
+
+-- AIM
+local AIM = { current_target = nil, start_time = 0 }
+
+local function lerp_angle(a, b, t)
+    local d = b - a
+    while d > 180 do d = d - 360 end
+    while d < -180 do d = d + 360 end
+    return a + d * t
+end
+
+local function osnova_aim_at_point()
+    osnova_update_helper_active()
+    if not ui.settings.active then AIM.current_target = nil; return end
+    local action_locs = osnova_get_action_locations()
+    if not action_locs or #action_locs == 0 then AIM.current_target = nil; return end
+    -- during a macro replay the camera is driven by the recorded samples;
+    -- keep the auto-aim from nudging it off the exact recorded angles
+    if osnova_any_macro_playing() then AIM.current_target = nil; return end
+
+    local local_player = entities.GetLocalPlayer()
+    if not local_player or not local_player:IsAlive() then AIM.current_target = nil; return end
+
+    local origin = local_player:GetAbsOrigin()
+    local target_loc = osnova_find_target_location(origin)
+
+    if not target_loc or not (target_loc.aim_x and target_loc.aim_y and target_loc.aim_z) then
+        AIM.current_target = nil
+        return
+    end
+
+    if target_loc.macro and target_loc.seq_active then
+        AIM.current_target = nil
+        return
+    end
+
+    local arrive_dist = math.sqrt((origin.x - target_loc.pos_x) ^ 2 + (origin.y - target_loc.pos_y) ^ 2)
+    local speed2d = osnova_get_speed2d(local_player)
+    if arrive_dist > ARRIVED_DIST or speed2d >= ARRIVED_STOP_SPEED then
+        AIM.current_target = nil
+        return
+    end
+
+    if AIM.current_target ~= target_loc then
+        AIM.current_target = target_loc
+        AIM.start_time = common.Time()
+    end
+
+    local reaction_s = (ui.settings.reaction or 0) / 1000
+    if common.Time() - AIM.start_time < reaction_s then return end
+
+    local eye = Vector3(origin.x, origin.y, origin.z + 64)
+    local aim_point = Vector3(target_loc.aim_x, target_loc.aim_y, target_loc.aim_z)
+    local target_angles = (aim_point - eye):Angles()
+
+    local current = nil
+    pcall(function() current = engine.GetViewAngles() end)
+    if not current then return end
+
+    local cur_pitch = current.pitch or current.x or 0
+    local cur_yaw = current.yaw or current.y or 0
+    local tgt_pitch = target_angles.pitch or target_angles.x or 0
+    local tgt_yaw = target_angles.yaw or target_angles.y or 0
+
+    local dp = osnova_angle_diff(cur_pitch, tgt_pitch)
+    local dy = osnova_angle_diff(cur_yaw, tgt_yaw)
+    local angle_dist = math.sqrt(dp * dp + dy * dy)
+
+    -- smooth approach, but snap exactly onto the aim point once we are
+    -- close, so the crosshair ends up dead-centre on it (no residual
+    -- offset / "откос" on longer throws)
+    local smooth = math.max(0, math.min(100, ui.settings.smooth or 0))
+    local alpha = 1 - (smooth / 100) * 0.92
+    if angle_dist < 0.8 then alpha = 1 end
+
+    local new_pitch = lerp_angle(cur_pitch, tgt_pitch, alpha)
+    local new_yaw = lerp_angle(cur_yaw, tgt_yaw, alpha)
+
+    pcall(function() engine.SetViewAngles(EulerAngles(new_pitch, new_yaw, 0)) end)
+end
+
+callbacks.Register("Draw", "osnova_gh_aim", function()
+    local ok, err = pcall(osnova_aim_at_point)
+
+end)
+
+-- AUTO THROW + MACRO (mostly unchanged)
+local AIM_ANIM_SPEED = 8
+local GREEN_SETTLE_TIME = (1 / AIM_ANIM_SPEED) + 0.02
+local AUTO_THROW_STOP_SPEED = 5
+local NO_AIM_AFTER_THROW = 0.2
+
+local MOVE_DIR_VK = { [2] = AW_VK_W, [3] = AW_VK_S, [4] = AW_VK_A, [5] = AW_VK_D }
+
+local function osnova_throw_release_keys(loc)
+    if loc.throw_holding then
+        aw_mouse_left(false)
+        loc.throw_holding = false
+    end
+
+    if loc.throw_move_vk then
+        aw_key(loc.throw_move_vk, false)
+        loc.throw_move_vk = nil
+    end
+
+    if loc.throw_crouching then
+        aw_key(AW_VK_CTRL, false)
+        loc.throw_crouching = false
+    end
+end
+
+local RECORD_KEY_VK = { w = AW_VK_W, a = AW_VK_A, s = AW_VK_S, d = AW_VK_D, space = AW_VK_SPACE, ctrl = AW_VK_CTRL }
+
+local function osnova_macro_release_all(loc)
+    if not loc.macro_keys_down then return end
+    for id, down in pairs(loc.macro_keys_down) do
+        if down then
+            if id == "attack" then
+                aw_mouse_left(false)
+            else
+                local vk = RECORD_KEY_VK[id]
+                if vk then aw_key(vk, false) end
+            end
+        end
+    end
+    loc.macro_keys_down = nil
+end
+
+-- Find the interpolated camera angle (pitch, yaw) at a given elapsed time.
+-- Macro is time-ordered; "look" events are keyframes we lerp between so the
+-- replayed camera turns smoothly instead of snapping between samples.
+local function osnova_macro_look_at(macro, elapsed_ms)
+    local prev_t, prev_p, prev_y = nil, nil, nil
+    for k = 1, #macro do
+        local ev = macro[k]
+        if ev.key == "look" then
+            if ev.t <= elapsed_ms then
+                prev_t, prev_p, prev_y = ev.t, ev.pitch, ev.yaw
+            else
+                if prev_t == nil then
+                    return ev.pitch, ev.yaw  -- before the first look sample
+                end
+                local span = ev.t - prev_t
+                local f = span > 0 and (elapsed_ms - prev_t) / span or 1
+                if f < 0 then f = 0 elseif f > 1 then f = 1 end
+                return lerp_angle(prev_p, ev.pitch, f), lerp_angle(prev_y, ev.yaw, f)
+            end
+        end
+    end
+    if prev_t ~= nil then
+        return prev_p, prev_y  -- after the last look sample: hold final angle
+    end
+    return nil, nil
+end
+
+-- ==================== MOVEMENT HELPER PLAYBACK ====================
+local function osnova_movement_release_all(loc)
+    if not loc.movement_keys_down then return end
+    for id, down in pairs(loc.movement_keys_down) do
+        if down then
+            local vk = RECORD_KEY_VK[id]
+            if vk then aw_key(vk, false) end
+        end
+    end
+    loc.movement_keys_down = nil
+end
+
+local function osnova_movement_play_reset(loc)
+    osnova_movement_release_all(loc)
+    loc.movement_play_active = false
+    loc.movement_play_start_at = nil
+    loc.movement_play_idx = nil
+    loc.movement_aim_since = nil
+end
+
+local function osnova_movement_tick_playback(loc, now)
+    local macro = loc.movement_macro
+    if not macro then return end
+
+    loc.movement_keys_down = loc.movement_keys_down or {}
+    local elapsed_ms = (now - loc.movement_play_start_at) * 1000
+
+    loc.movement_play_idx = loc.movement_play_idx or 1
+    while loc.movement_play_idx <= #macro and macro[loc.movement_play_idx].t <= elapsed_ms do
+        local ev = macro[loc.movement_play_idx]
+        if ev.key ~= "look" then
+            local vk = RECORD_KEY_VK[ev.key]
+            if vk then
+                aw_key(vk, ev.down)
+                loc.movement_keys_down[ev.key] = ev.down
+            end
+        end
+        loc.movement_play_idx = loc.movement_play_idx + 1
+    end
+
+    local ip, iy = osnova_macro_look_at(macro, elapsed_ms)
+    if ip ~= nil and iy ~= nil then
+        pcall(function() engine.SetViewAngles(EulerAngles(ip, iy, 0)) end)
+    end
+
+    if loc.movement_play_idx > #macro then
+        osnova_movement_play_reset(loc)
+    end
+end
+
+local function osnova_movement_playback()
+    osnova_update_helper_active()
+    if not ui.settings.active then
+        for _, md in pairs(ui.map_data) do
+            for _, mh in pairs(md.movement_helpers or {}) do
+                for _, loc in ipairs(mh.locations or {}) do osnova_movement_play_reset(loc) end
+            end
+        end
+        return
+    end
+
+    local action_locs, action_browser, action_id = osnova_get_action_locations()
+    if action_browser ~= "movement" then return end
+    if not osnova_movement_feature_enabled() then return end
+
+    local local_player = entities.GetLocalPlayer()
+    if not local_player or not local_player:IsAlive() then return end
+
+    local now = common.Time()
+    local origin = local_player:GetAbsOrigin()
+    local speed2d = osnova_get_speed2d(local_player)
+
+    local locs = action_locs
+
+    for _, loc in ipairs(locs) do
+        if loc.movement_play_active then
+            osnova_movement_tick_playback(loc, now)
+        end
+    end
+
+    -- do not start another one while one is already replaying
+    if osnova_any_macro_playing() then return end
+
+    local target = osnova_select_target(origin)
+    if not target or not target.movement_macro then
+        for _, loc in ipairs(locs) do
+            if not loc.movement_play_active then loc.movement_aim_since = nil end
+        end
+        return
+    end
+
+    if not (target.pos_x and target.pos_y and target.aim_x and target.aim_y and target.aim_z) then return end
+
+    local dist2d = math.sqrt((origin.x - target.pos_x) ^ 2 + (origin.y - target.pos_y) ^ 2)
+    local arrived = dist2d <= ARRIVED_DIST and speed2d < ARRIVED_STOP_SPEED
+    if not arrived then
+        target.movement_aim_since = nil
+        return
+    end
+
+    local is_aimed = osnova_is_aimed_at(origin, Vector3(target.aim_x, target.aim_y, target.aim_z))
+    if not is_aimed then
+        target.movement_aim_since = nil
+        return
+    end
+
+    if not target.movement_aim_since then
+        target.movement_aim_since = now
+        return
+    end
+
+    local reaction_s = (ui.settings.reaction or 0) / 1000
+    local wait_time = math.max(reaction_s, GREEN_SETTLE_TIME)
+    if now - target.movement_aim_since < wait_time then return end
+
+    target.movement_play_active = true
+    target.movement_play_start_at = now
+    target.movement_play_idx = 1
+    target.movement_keys_down = {}
+
+end
+
+callbacks.Register("Draw", "osnova_mh_playback", function()
+    local ok, err = pcall(osnova_movement_playback)
+
+end)
+callbacks.Register("Unload", "osnova_mh_playback_unload", function()
+    for _, mh in pairs(ui.movement_helpers) do
+        for _, loc in ipairs(mh.locations) do osnova_movement_play_reset(loc) end
+    end
+end)
+
+local function osnova_tick_macro(loc, now)
+    local macro = loc.macro
+    loc.macro_keys_down = loc.macro_keys_down or {}
+
+    local elapsed_ms = (now - loc.throw_start_at) * 1000
+
+    -- discrete (key) events: fire those whose timestamp has already passed
+    loc.macro_idx = loc.macro_idx or 1
+    while loc.macro_idx <= #macro and macro[loc.macro_idx].t <= elapsed_ms do
+        local ev = macro[loc.macro_idx]
+        if ev.key ~= "look" then
+            if ev.key == "attack" then
+                aw_mouse_left(ev.down)
+                loc.macro_keys_down[ev.key] = ev.down
+                if not ev.down then
+                    loc.no_aim_until = now + NO_AIM_AFTER_THROW
+                end
+            else
+                local vk = RECORD_KEY_VK[ev.key]
+                if vk then aw_key(vk, ev.down) end
+                loc.macro_keys_down[ev.key] = ev.down
+            end
+        end
+        loc.macro_idx = loc.macro_idx + 1
+    end
+
+    -- continuous camera: interpolate between look keyframes for smooth turns
+    local ip, iy = osnova_macro_look_at(macro, elapsed_ms)
+    if ip ~= nil and iy ~= nil then
+        pcall(function() engine.SetViewAngles(EulerAngles(ip, iy, 0)) end)
+    end
+
+    if loc.macro_idx > #macro then
+        osnova_macro_release_all(loc)
+        loc.seq_active = false
+        loc.throw_aim_since = nil
+        loc.throw_start_at = nil
+        loc.macro_idx = nil
+    end
+end
+
+
+
+local function osnova_throw_reset(loc)
+    osnova_throw_release_keys(loc)
+    osnova_macro_release_all(loc)
+    loc.seq_active = false
+    loc.throw_aim_since = nil
+    loc.throw_start_at = nil
+    loc.walk_start_at = nil
+    loc.crouch_start_at = nil
+    loc.jump_fired = false
+    loc.macro_idx = nil
+end
+
+local function osnova_tick_sequence(loc, now)
+    if loc.macro then
+        osnova_tick_macro(loc, now)
+        return
+    end
+
+    if loc.e_jump and not loc.jump_fired then
+        if (now - loc.throw_start_at) * 1000 >= (loc.jump_d or 0) then
+            aw_key(AW_VK_SPACE, true)
+            aw_key(AW_VK_SPACE, false)
+            loc.jump_fired = true
+        end
+    end
+
+    if loc.throw_move_vk and loc.walk_start_at then
+        if (now - loc.walk_start_at) * 1000 >= (loc.run_t or 0) then
+            aw_key(loc.throw_move_vk, false)
+            loc.throw_move_vk = nil
+        end
+    end
+
+    if loc.throw_crouching and loc.crouch_start_at then
+        if (now - loc.crouch_start_at) * 1000 >= (loc.crouch_t or 0) then
+            aw_key(AW_VK_CTRL, false)
+            loc.throw_crouching = false
+        end
+    end
+
+    if loc.throw_holding then
+        local held_ms = (now - loc.throw_start_at) * 1000
+        if held_ms >= (loc.throw_d or 0) then
+            aw_mouse_left(false)
+            loc.throw_holding = false
+            loc.no_aim_until = now + NO_AIM_AFTER_THROW
+        end
+    end
+
+    if not loc.throw_holding and not loc.throw_move_vk and not loc.throw_crouching
+        and (loc.jump_fired or not loc.e_jump) then
+        loc.seq_active = false
+        loc.throw_aim_since = nil
+        loc.throw_start_at = nil
+        loc.walk_start_at = nil
+        loc.crouch_start_at = nil
+    end
+end
+
+local function osnova_auto_throw()
+    osnova_update_helper_active()
+    if not ui.settings.active then
+        for _, md in pairs(ui.map_data) do
+            for _, group in pairs(md.groups or {}) do
+                for _, loc in ipairs(group.locations or {}) do
+                    osnova_throw_reset(loc)
+                end
+            end
+        end
+        return
+    end
+
+    local local_player = entities.GetLocalPlayer()
+    if not local_player or not local_player:IsAlive() then return end
+
+    local menu_is_open = ui.menu_active
+    if menu_is_open == nil then
+        pcall(function() menu_is_open = gui.Reference("Menu"):IsActive() end)
+    end
+
+    local speed2d = osnova_get_speed2d(local_player)
+    local is_stopped = speed2d < AUTO_THROW_STOP_SPEED
+
+    local origin = local_player:GetAbsOrigin()
+    local now = common.Time()
+
+    if not osnova_is_holding_grenade() then
+        for _, md in pairs(ui.map_data) do
+            for _, group in pairs(md.groups or {}) do
+                for _, loc in ipairs(group.locations or {}) do
+                    osnova_throw_reset(loc)
+                end
+            end
+        end
+        return
+    end
+
+    local grenade_def = osnova_canonical_grenade_def(osnova_active_grenade_def())
+    local locs = osnova_get_locations_for(ui.current_map, "group", grenade_def)
+
+    for _, loc in ipairs(locs) do
+        if loc.seq_active then
+            osnova_tick_sequence(loc, now)
+        end
+    end
+
+    -- Only ONE location can be armed / played at a time: the one we're looking
+    -- at inside the FOV cone. Everything else (including the "newest" spot or a
+    -- closer ground spot) is reset, so we never throw / play back the wrong one.
+    local target = osnova_select_target(origin)
+
+    local best_loc = nil
+
+    for _, loc in ipairs(locs) do
+        if loc.seq_active then
+            -- already playing; ticked above, leave it alone
+        elseif loc == target and (loc.macro or loc.e_throw)
+            and loc.aim_x and loc.aim_y and loc.aim_z
+            and loc.pos_x and loc.pos_y then
+            local player_dist_2d = math.sqrt((origin.x - loc.pos_x) ^ 2 + (origin.y - loc.pos_y) ^ 2)
+            local locked_out = loc.no_aim_until and now < loc.no_aim_until
+            local has_arrived = player_dist_2d <= ARRIVED_DIST and speed2d < ARRIVED_STOP_SPEED
+
+            if locked_out or not has_arrived then
+                osnova_throw_reset(loc)
+            else
+                local is_aimed = osnova_is_aimed_at(origin, Vector3(loc.aim_x, loc.aim_y, loc.aim_z))
+                if is_aimed then
+                    best_loc = loc
+                else
+                    osnova_throw_reset(loc)
+                end
+            end
+        else
+            osnova_throw_reset(loc)
+        end
+    end
+
+    for _, loc in ipairs(locs) do
+        if loc ~= best_loc and not loc.seq_active and loc.throw_aim_since then
+            osnova_throw_reset(loc)
+        end
+    end
+
+    if best_loc then
+        local loc = best_loc
+
+        if not loc.throw_aim_since then
+            loc.throw_aim_since = now
+        end
+
+        local reaction_s = (ui.settings.reaction or 0) / 1000
+        local wait_time = math.max(reaction_s, GREEN_SETTLE_TIME)
+        local settled = (now - loc.throw_aim_since) >= wait_time
+
+        if settled then
+            loc.seq_active = true
+            loc.throw_start_at = now
+
+            if loc.macro then
+                loc.macro_idx = 1
+                loc.macro_keys_down = {}
+            else
+                loc.jump_fired = false
+                aw_mouse_left(true)
+                loc.throw_holding = true
+
+                if loc.e_crouch then
+                    aw_key(AW_VK_CTRL, true)
+                    loc.throw_crouching = true
+                    loc.crouch_start_at = now
+                end
+
+                if loc.e_walk and (loc.m_dir or 1) > 1 then
+                    local vk = MOVE_DIR_VK[loc.m_dir]
+                    if vk then
+                        aw_key(vk, true)
+                        loc.throw_move_vk = vk
+                        loc.walk_start_at = now
+                    end
+                end
+            end
+        end
+    end
+end
+
+callbacks.Register("Draw", "osnova_gh_autothrow", function()
+    local ok, err = pcall(osnova_auto_throw)
+
+end)
+
+local function osnova_gh_autothrow_cleanup()
+    for _, md in pairs(ui.map_data) do
+        for _, group in pairs(md.groups or {}) do
+            for _, loc in ipairs(group.locations or {}) do
+                osnova_throw_release_keys(loc)
+                osnova_macro_release_all(loc)
+            end
+        end
+    end
+end
+
+callbacks.Register("Unload", "osnova_gh_autothrow_unload", osnova_gh_autothrow_cleanup)
+
+-- Initialize current locations
+sync_current_locations()
+
