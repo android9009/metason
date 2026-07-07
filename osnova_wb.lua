@@ -200,7 +200,9 @@ local function loc_weapon_allowed(loc)
     local f = loc and loc.weapon_filter or "all"
     if not f or f == "" or f == "all" then return true end
     local cur = current_weapon_filter()
-    if cur == "unknown" then return true end
+    -- If location is filtered to Scout/Pistol/Rifle/AWP/Auto, then knife,
+    -- grenade, zeus, bomb, or unknown weapon must NOT show it.
+    if cur == "unknown" then return false end
     return f == cur
 end
 
