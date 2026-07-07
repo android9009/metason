@@ -7,6 +7,7 @@ _G.WB = _G.WB or {}
 local WB = _G.WB
 WB.loaded = true
 WB.version = "0.2-builder"
+WB.tab_name = "WALLBANG"
 
 _G.OSNOVA_WALLBANG_ENABLED = true
 if _G.__OSNOVA then _G.__OSNOVA.wb_on = true end
