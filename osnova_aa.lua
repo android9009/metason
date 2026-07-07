@@ -3719,20 +3719,37 @@ function on_draw()
 	end
 
 	-- Wallbang Helper: checkbox calls the regular OSNOVA loader.
-	-- The WB module only enables the WALLBANG tab in Grenade Helper for now.
+	-- WB cannot work without Grenade Helper enabled.
 	if g.wb_enable then
+		local gh_checkbox_on = (g.gr_enable and g.gr_enable:GetValue()) or false
 		local wb_on = g.wb_enable:GetValue()
+		local L = rawget(_G, "__OSNOVA")
+
+		if wb_on and not gh_checkbox_on then
+			-- force-disable WB when GH is off
+			g.wb_enable:SetValue(false)
+			wb_on = false
+			if L and L.unload_wb then pcall(L.unload_wb) end
+			_G.OSNOVA_WALLBANG_ENABLED = false
+			wb_was_enabled = false
+		end
+
 		if wb_on and not wb_was_enabled then
 			wb_was_enabled = true
-			local L = rawget(_G, "__OSNOVA")
 			if L and L.load_wb then
-				pcall(L.load_wb)
+				local ok = false
+				pcall(function() ok = L.load_wb() end)
+				if not ok then
+					g.wb_enable:SetValue(false)
+					wb_was_enabled = false
+				end
 			else
 				print("[osnova] loader WB api missing; reload via osnova_loader_gh_api.lua")
+				g.wb_enable:SetValue(false)
+				wb_was_enabled = false
 			end
 		elseif not wb_on and wb_was_enabled then
 			wb_was_enabled = false
-			local L = rawget(_G, "__OSNOVA")
 			if L and L.unload_wb then
 				pcall(L.unload_wb)
 			else
@@ -3758,6 +3775,10 @@ function on_draw()
 		elseif not gh_on and gh_was_enabled then
 			gh_was_enabled = false
 			local L = rawget(_G, "__OSNOVA")
+			-- turning GH off also turns WB off
+			if g.wb_enable then g.wb_enable:SetValue(false) end
+			wb_was_enabled = false
+			if L and L.unload_wb then pcall(L.unload_wb) end
 			if L and L.unload_gh then
 				pcall(L.unload_gh)
 			else
