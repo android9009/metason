@@ -4,6 +4,46 @@
 local unpack = unpack or table.unpack
 
 -- === ICON LOADER INJECTED ===
+_G.WB_ICONS = _G.WB_ICONS or {
+    queue = {},
+    cache = {},
+    list = {
+        ["all"] = "weapon_c4.png",
+        ["scout"] = "weapon_ssg08.png",
+        ["pistol"] = "weapon_deagle.png",
+        ["rifle"] = "weapon_ak47.png",
+        ["awp"] = "weapon_awp.png",
+        ["auto"] = "weapon_scar20.png"
+    }
+}
+
+do
+    local BASE_URL = "https://raw.githubusercontent.com/Spencer-png/cs2-gun-icons/main/cs2%20weapons/"
+    local function make_rgba_white(rgba_string)
+        local new_rgba = {}
+        for i = 1, #rgba_string, 4 do
+            local a = string.byte(rgba_string, i + 3)
+            table.insert(new_rgba, string.char(255, 255, 255, a))
+        end
+        return table.concat(new_rgba)
+    end
+
+    for id, file in pairs(_G.WB_ICONS.list) do
+        http.Get(BASE_URL .. file, function(data)
+            if data then
+                local rgba, width, height = common.DecodePNG(data)
+                if rgba then
+                    _G.WB_ICONS.queue[id] = { rgba = make_rgba_white(rgba), width = width, height = height }
+                end
+            end
+        end)
+    end
+end
+-- ============================
+
+
+
+-- === ICON LOADER INJECTED ===
 local osnova_icons = {
     ["all"] = "weapon_c4.png", -- fallback icon
     ["scout"] = "weapon_ssg08.png",
