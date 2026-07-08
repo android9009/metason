@@ -765,45 +765,6 @@ function WB.DrawTab(cx, cy, cw, ch)
     draw.Color(140, 140, 140, 255)
     draw.Text(rx + 12, cy + 2, "Current map: " .. tostring(WB.current_map))
 
-    -- Add Auto-walk Keybind UI
-    local kw, kh = 120, 20
-    draw.SetFont(f_main)
-    draw.Color(230, 230, 230, 255)
-    draw.Text(rx + 12, cy + 20, "Auto-Walk Key")
-    
-    local key_label = WB.autowalk_key == 0 and "None" or tostring(WB.autowalk_key)
-    if WB._binding then key_label = "Press a key..." end
-    
-    local bx, by = rx + right_w - kw - 12, cy + 16
-    draw.Color(0, 0, 0, 70)
-    draw.ShadowRect(bx, by, bx + kw, by + kh, 8)
-    draw.Color(20, 20, 20, 255)
-    draw.RoundedRectFill(bx, by, bx + kw, by + kh, 3, 3, 3, 3, 3)
-    draw.Color(45, 45, 45, 255)
-    draw.RoundedRect(bx, by, bx + kw, by + kh, 3, 3, 3, 3, 3)
-    
-    draw.Color(180, 180, 180, 255)
-    local tw, th = draw.GetTextSize(key_label)
-    draw.Text(bx + (kw - tw)/2, by + (kh - th)/2, key_label)
-    
-    if mouse_in(bx, by, kw, kh) and input.IsButtonPressed(1) then
-        WB._binding = true
-    end
-    
-    if WB._binding then
-        for i = 1, 255 do
-            if i ~= 1 and i ~= 2 and input.IsButtonPressed(i) then
-                if i == 27 then -- ESC
-                    WB.autowalk_key = 0
-                else
-                    WB.autowalk_key = i
-                end
-                WB._binding = false
-                break
-            end
-        end
-    end
-
     draw_listbox(lx + 10, cy + 15, left_w - 20, ch - 25, get_maps(), "map")
 
     local locs = get_locs(WB.selected_map)
@@ -851,68 +812,7 @@ end
 
 load_db()
 
-
-WB.autowalk_key = WB.autowalk_key or 0
-
-callbacks.Register("CreateMove", "osnova_wb_autowalk", function(cmd)
-    if not (WB.loaded and _G.OSNOVA_WALLBANG_ENABLED) then return end
-    
-    local lp = entities.GetLocalPlayer()
-    if not lp or not lp:IsAlive() then return end
-
-    if WB.autowalk_key and WB.autowalk_key > 0 and input.IsButtonDown(WB.autowalk_key) then
-        local origin = lp:GetAbsOrigin()
-        
-        local map = get_map_name()
-        local locs = get_locs(map)
-        local best_loc = nil
-        local best_dist = math.huge
-        
-        for _, loc in ipairs(locs) do
-            if loc.from_x and loc.from_y and loc.from_z and loc_weapon_allowed(loc) then
-                local d = dist3(origin, loc.from_x, loc.from_y, loc.from_z)
-                if d < best_dist and d < 350 then
-                    best_dist = d
-                    best_loc = loc
-                end
-            end
-        end
-        
-        if best_loc then
-            local dx = best_loc.from_x - origin.x
-            local dy = best_loc.from_y - origin.y
-            local dist2d = math.sqrt(dx*dx + dy*dy)
-            
-            if dist2d > 2.0 then
-                -- Calculate world angle to target
-                local target_yaw = math.deg(math.atan2(dy, dx))
-                -- Get view angle
-                local view_angles = engine.GetViewAngles()
-                local cur_yaw = view_angles.yaw or view_angles.y or 0
-                
-                -- Relative angle
-                local diff = math.rad(target_yaw - cur_yaw)
-                
-                -- Apply to cmd
-                local max_speed = 250
-                if dist2d < 15 then max_speed = 100 end
-                if dist2d < 5 then max_speed = 30 end
-                
-                cmd.forwardmove = math.cos(diff) * max_speed
-                cmd.sidemove = -math.sin(diff) * max_speed
-                
-                -- Force stop buttons
-                cmd:SetButtons(bit.band(cmd:GetButtons(), bit.bnot(bit.bor(8, 16, 512, 1024)))) -- IN_FORWARD, IN_BACK, IN_MOVELEFT, IN_MOVERIGHT
-            else
-                cmd.forwardmove = 0
-                cmd.sidemove = 0
-            end
-        end
-    end
-end)
-
 callbacks.Register("Draw", "osnova_wb_world", render_wallbang_world)
 callbacks.Register("Unload", "osnova_wb_unload", function()
-    pcall(function() callbacks.Unregister("CreateMove", "osnova_wb_autowalk") end)
     if WB and WB.uninstall then pcall(WB.uninstall) end
 end)
