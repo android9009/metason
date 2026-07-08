@@ -424,8 +424,13 @@ end
 
 local function get_render_icon_id(loc)
     local def = active_weapon_def()
-    if def and def > 0 and _G.WB_ICONS.cache[def] then
-        return def
+    if def and def > 0 then
+        if _G.WB_ICONS.cache[def] then
+            return def
+        end
+        if def >= 500 and def <= 525 and _G.WB_ICONS.cache["knife"] then
+            return "knife"
+        end
     end
     -- Fallback to the filter's default
     local f = loc and loc.weapon_filter or "all"
@@ -501,7 +506,7 @@ local function render_wallbang_world()
                 local name = loc.name or "Wallbang"
                 draw_wallbang_tracer(loc, alpha, to_r, to_g, to_b)
                 draw_world_point(loc.from_x, loc.from_y, loc.from_z, "FROM: " .. name, from_r, from_g, from_b, alpha, scale, get_render_icon_id(loc))
-                draw_world_point(loc.to_x, loc.to_y, loc.to_z, "TO: " .. name, to_r, to_g, to_b, alpha, scale, get_render_icon_id(loc))
+                draw_world_point(loc.to_x, loc.to_y, loc.to_z, "TO: " .. name, to_r, to_g, to_b, alpha, scale, nil)
             end
         end
         ::continue_wb_loc::
