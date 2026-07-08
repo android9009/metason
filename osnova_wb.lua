@@ -7,7 +7,7 @@ local unpack = unpack or table.unpack
 _G.WB_ICONS = _G.WB_ICONS or {
     queue = {},
     cache = {},
-    _G.WB_ICONS.list = {
+    list = {
     [1] = "weapon_deagle.png",
     [2] = "weapon_elite.png",
     [3] = "weapon_fiveseven.png",
@@ -607,7 +607,35 @@ local function draw_listbox(x, y, w, h, items, mode)
 
         draw.SetFont(f_main)
         draw.Color(selected and 255 or 160, selected and 255 or 160, selected and 255 or 160, 255)
-        draw.Text(x + 10, iy + 4, text)
+        local text_x = x + 10
+        local tex = nil
+        
+        if mode == "loc" and items[i].weapon_filter then
+            local filter_id = items[i].weapon_filter
+            -- Use the helper we wrote earlier: get_render_icon_id? Wait, in WB menu it should show what is CONFIGURED for that spot, not the active weapon.
+            -- So just use items[i].weapon_filter directly.
+            if _G.WB_ICONS.cache[filter_id] then
+                tex = _G.WB_ICONS.cache[filter_id]
+            elseif filter_id == "all" and _G.WB_ICONS.cache["default"] then
+                tex = _G.WB_ICONS.cache["default"]
+            end
+        end
+
+        if tex then
+            local max_icon_h = 14
+            local scale = math.min(1.0, max_icon_h / tex.height)
+            local tex_w = math.floor(tex.width * scale * 0.7)
+            local tex_h = math.floor(tex.height * scale * 0.7)
+            
+            draw.Color(selected and 255 or 160, selected and 255 or 160, selected and 255 or 160, 255)
+            draw.SetTexture(tex.texture)
+            local tex_y = iy + math.floor((22 - tex_h) / 2)
+            draw.FilledRect(text_x, tex_y, text_x + tex_w, tex_y + tex_h)
+            draw.SetTexture(nil)
+            text_x = text_x + tex_w + 5
+        end
+
+        draw.Text(text_x, iy + 4, text)
 
         if hover and input.IsButtonPressed(1) then
             if mode == "map" then
