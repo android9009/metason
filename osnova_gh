@@ -1174,8 +1174,12 @@ local function render_world_locations()
     if ui.selected_browser == "movement" then
         draw_near_aim_for_locs(osnova_get_locations_for(ui.current_map, "movement", ui.selected_movement_helper), nil)
     else
-        if ui.selected_group then
-            local cdef = osnova_canon_def_early(ui.selected_group)
+        local render_def = held_def
+        if not render_def or not ui.groups[render_def] then
+            render_def = ui.selected_group
+        end
+        if render_def then
+            local cdef = osnova_canon_def_early(render_def)
             if osnova_grenade_feature_enabled(cdef) then
                 draw_near_aim_for_locs(osnova_get_locations_for(ui.current_map, "group", cdef), cdef)
             end
@@ -1287,8 +1291,12 @@ local function render_world_locations()
                 -- Show all grenade-group locations from every map. Rendering is visual
                 -- only; gameplay still uses the held grenade. This avoids loaded
                 -- locations being present in file/menu but invisible in world.
-                if ui.selected_group then
-                    local cdef = osnova_canon_def_early(ui.selected_group)
+                local render_def = held_def
+                if not render_def or not ui.groups[render_def] then
+                    render_def = ui.selected_group
+                end
+                if render_def then
+                    local cdef = osnova_canon_def_early(render_def)
                     if osnova_grenade_feature_enabled(cdef) then
                         local locs = osnova_get_locations_for(map, "group", cdef)
                         for i, loc in pairs(locs) do
@@ -1308,8 +1316,12 @@ local function render_world_locations()
         -- Render all grenade-group locations on current map. Gameplay still uses
         -- held grenade via osnova_get_action_locations(), but visuals should not
         -- disappear after Lua reload just because UI/held group differ.
-        if ui.selected_group then
-            local cdef = osnova_canon_def_early(ui.selected_group)
+        local render_def = held_def
+        if not render_def or not ui.groups[render_def] then
+            render_def = ui.selected_group
+        end
+        if render_def then
+            local cdef = osnova_canon_def_early(render_def)
             if osnova_grenade_feature_enabled(cdef) then
                 local locs = osnova_get_locations_for(ui.current_map, "group", cdef)
                 for i, loc in pairs(locs) do
