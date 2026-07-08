@@ -276,12 +276,73 @@ local WB_FILTER_LABEL = {
     auto = "Auto",
 }
 
+
+local WD = { off = { dwEntityList = 38696576, dwLocalPlayerController = 36832624, m_hPlayerPawn = 2316, m_pWeaponServices = 4576, m_hActiveWeapon = 96, m_AttributeManager = 4480, m_Item = 80, m_iItemDefinitionIndex = 442 }, ready = false, tried = false }
+
+local function wd_setup()
+    if WD.tried then return end
+    WD.tried = true
+    local ffi = rawget(_G, "ffi")
+    if type(ffi) ~= "table" then return end
+    WD.ffi = ffi
+    pcall(function() ffi.cdef[[ ]] end)
+    local function r_ptr(a)
+        local ok, v = pcall(function() return tonumber(ffi.cast("uint64_t*", a)[0]) end)
+        return ok and v or nil
+    end
+    local function r_u16(a)
+        local ok, v = pcall(function() return tonumber(ffi.cast("uint16_t*", a)[0]) end)
+        return ok and v or nil
+    end
+    local function r_u32(a)
+        local ok, v = pcall(function() return tonumber(ffi.cast("uint32_t*", a)[0]) end)
+        return ok and v or nil
+    end
+    local function valid(p) return p ~= nil and p > 0x10000 and p < 0x7FFFFFFFFFFF end
+    WD.r_ptr, WD.r_u16, WD.r_u32, WD.valid = r_ptr, r_u16, r_u32, valid
+    WD.ready = true
+end
+
+local function wd_handle_to_entity(elist, hnd)
+    local band, rshift = bit.band, bit.rshift
+    if not (WD.valid(elist) and hnd and hnd ~= 0 and hnd ~= 0xFFFFFFFF) then return nil end
+    local idx = band(hnd, 0x7FFF)
+    local chunk = WD.r_ptr(elist + 8 * rshift(idx, 9) + 16)
+    if not WD.valid(chunk) then return nil end
+    local e = WD.r_ptr(chunk + 112 * band(idx, 0x1FF))
+    if WD.valid(e) and WD.valid(WD.r_ptr(e)) then return e end
+    return nil
+end
+
+local function ffi_active_weapon_def()
+    wd_setup()
+    if not WD.ready then return nil end
+    local base = mem.GetModuleBase("client.dll")
+    if not base then return nil end
+    local ctrl = WD.r_ptr(base + WD.off.dwLocalPlayerController)
+    if not WD.valid(ctrl) then return nil end
+    local elist = WD.r_ptr(base + WD.off.dwEntityList)
+    if not WD.valid(elist) then return nil end
+    local pawn_handle = WD.r_u32(ctrl + WD.off.m_hPlayerPawn)
+    local pawn = wd_handle_to_entity(elist, pawn_handle)
+    if not WD.valid(pawn) then return nil end
+    local ws = WD.r_ptr(pawn + WD.off.m_pWeaponServices)
+    if not WD.valid(ws) then return nil end
+    local wpn = wd_handle_to_entity(elist, WD.r_u32(ws + WD.off.m_hActiveWeapon))
+    if not wpn then return nil end
+    local item = wpn + WD.off.m_AttributeManager + WD.off.m_Item
+    return WD.r_u16(item + WD.off.m_iItemDefinitionIndex)
+end
+
 local function active_weapon_def()
     local def = nil
     pcall(function()
         local api = rawget(_G, "AWCHANGER_API")
         if api and api.activeDef then def = api.activeDef() end
     end)
+    if not def then
+        pcall(function() def = ffi_active_weapon_def() end)
+    end
     return def
 end
 
