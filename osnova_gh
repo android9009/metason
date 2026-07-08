@@ -18,7 +18,7 @@ _G.GH_ICONS = _G.GH_ICONS or {
 }
 
 do
-    _G.GH_ICONS.BASE_URL = "https://raw.githubusercontent.com/Spencer-png/cs2-gun-icons/main/cs2%20weapons/"
+    _G.GH_ICONS.BASE_URL = "https://raw.githubusercontent.com/android9009/metason/main/icon/"
     _G.GH_ICONS.make_rgba_white = function(rgba_string)
         local new_rgba = {}
         for i = 1, #rgba_string, 4 do
@@ -51,7 +51,7 @@ local osnova_icons = {
     [43] = "weapon_flashbang.png",
     [47] = "weapon_decoy.png"
 }
-_G.GH_ICONS.BASE_URL = "https://raw.githubusercontent.com/Spencer-png/cs2-gun-icons/main/cs2%20weapons/"
+_G.GH_ICONS.BASE_URL = "https://raw.githubusercontent.com/android9009/metason/main/icon/"
 local textures_to_create = {}
 
 
