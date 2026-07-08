@@ -1874,8 +1874,12 @@ local function draw_listbox(x, y, w, h, items, mode)
                 tex = _G.GH_ICONS.cache[icon_id]
             end
         elseif mode == "location" then
-            -- Optional: we can draw the active group's icon next to location names too?
-            -- Actually, user asked for groups mainly, but let's see. For now just groups.
+            if ui.selected_browser == "group" and ui.selected_group then
+                local icon_id = ui.selected_group
+                if _G.GH_ICONS.cache[icon_id] then
+                    tex = _G.GH_ICONS.cache[icon_id]
+                end
+            end
         end
 
         if tex then
