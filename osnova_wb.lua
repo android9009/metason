@@ -7,14 +7,47 @@ local unpack = unpack or table.unpack
 _G.WB_ICONS = _G.WB_ICONS or {
     queue = {},
     cache = {},
-    list = {
-        ["all"] = "weapon_c4.png",
-        ["scout"] = "weapon_ssg08.png",
-        ["pistol"] = "weapon_deagle.png",
-        ["rifle"] = "weapon_ak47.png",
-        ["awp"] = "weapon_awp.png",
-        ["auto"] = "weapon_scar20.png"
-    }
+    _G.WB_ICONS.list = {
+    [1] = "weapon_deagle.png",
+    [2] = "weapon_elite.png",
+    [3] = "weapon_fiveseven.png",
+    [4] = "weapon_glock.png",
+    [7] = "weapon_ak47.png",
+    [8] = "weapon_aug.png",
+    [9] = "weapon_awp.png",
+    [10] = "weapon_famas.png",
+    [11] = "weapon_g3sg1.png",
+    [13] = "weapon_galilar.png",
+    [14] = "weapon_m249.png",
+    [16] = "weapon_m4a1.png",
+    [17] = "weapon_mac10.png",
+    [19] = "weapon_p90.png",
+    [24] = "weapon_ump45.png",
+    [25] = "weapon_xm1014.png",
+    [26] = "weapon_bizon.png",
+    [27] = "weapon_mag7.png",
+    [28] = "weapon_negev.png",
+    [29] = "weapon_sawedoff.png",
+    [30] = "weapon_tec9.png",
+    [32] = "weapon_hkp2000.png",
+    [33] = "weapon_mp7.png",
+    [34] = "weapon_mp9.png",
+    [35] = "weapon_nova.png",
+    [36] = "weapon_p250.png",
+    [38] = "weapon_scar20.png",
+    [39] = "weapon_sg556.png",
+    [40] = "weapon_ssg08.png",
+    [60] = "weapon_m4a1_silencer.png",
+    [61] = "weapon_usp_silencer.png",
+    [63] = "weapon_cz75a.png",
+    [64] = "weapon_revolver.png",
+    ["default"] = "weapon_c4.png",
+    ["scout"] = "weapon_ssg08.png",
+    ["pistol"] = "weapon_deagle.png",
+    ["rifle"] = "weapon_ak47.png",
+    ["awp"] = "weapon_awp.png",
+    ["auto"] = "weapon_scar20.png"
+}
 }
 
 do
@@ -388,6 +421,18 @@ local function draw_world_point(x, y, z, label, r, g, b, alpha, scale, icon_id)
     return sx, sy
 end
 
+
+local function get_render_icon_id(loc)
+    local def = active_weapon_def()
+    if def and def > 0 and _G.WB_ICONS.cache[def] then
+        return def
+    end
+    -- Fallback to the filter's default
+    local f = loc and loc.weapon_filter or "all"
+    if f == "all" then return "default" end
+    return f
+end
+
 local function draw_wallbang_tracer(loc, alpha, r, g, b)
     if not (loc and loc.from_x and loc.from_y and loc.from_z and loc.to_x and loc.to_y and loc.to_z) then return end
     if alpha <= 2 then return end
@@ -455,8 +500,8 @@ local function render_wallbang_world()
                 local to_r, to_g, to_b = 255, selected and 235 or 170, 95
                 local name = loc.name or "Wallbang"
                 draw_wallbang_tracer(loc, alpha, to_r, to_g, to_b)
-                draw_world_point(loc.from_x, loc.from_y, loc.from_z, "FROM: " .. name, from_r, from_g, from_b, alpha, scale, loc.weapon_filter)
-                draw_world_point(loc.to_x, loc.to_y, loc.to_z, "TO: " .. name, to_r, to_g, to_b, alpha, scale, loc.weapon_filter)
+                draw_world_point(loc.from_x, loc.from_y, loc.from_z, "FROM: " .. name, from_r, from_g, from_b, alpha, scale, get_render_icon_id(loc))
+                draw_world_point(loc.to_x, loc.to_y, loc.to_z, "TO: " .. name, to_r, to_g, to_b, alpha, scale, get_render_icon_id(loc))
             end
         end
         ::continue_wb_loc::
