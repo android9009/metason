@@ -1290,12 +1290,12 @@ local function render_world_locations()
                 -- Show all grenade-group locations from every map. Rendering is visual
                 -- only; gameplay still uses the held grenade. This avoids loaded
                 -- locations being present in file/menu but invisible in world.
-                for def, _ in pairs(ui.groups) do
-                    local cdef = osnova_canon_def_early(def)
+                if ui.selected_group then
+                    local cdef = osnova_canon_def_early(ui.selected_group)
                     if osnova_grenade_feature_enabled(cdef) then
                         local locs = osnova_get_locations_for(map, "group", cdef)
                         for i, loc in pairs(locs) do
-                            add_renderable_location(loc, i, map == ui.current_map and ui.selected_group == cdef and ui.selected_location == i, cdef)
+                            add_renderable_location(loc, i, map == ui.current_map and ui.selected_location == i, cdef)
                         end
                     end
                 end
@@ -1311,12 +1311,12 @@ local function render_world_locations()
         -- Render all grenade-group locations on current map. Gameplay still uses
         -- held grenade via osnova_get_action_locations(), but visuals should not
         -- disappear after Lua reload just because UI/held group differ.
-        for def, _ in pairs(ui.groups) do
-            local cdef = osnova_canon_def_early(def)
+        if ui.selected_group then
+            local cdef = osnova_canon_def_early(ui.selected_group)
             if osnova_grenade_feature_enabled(cdef) then
                 local locs = osnova_get_locations_for(ui.current_map, "group", cdef)
                 for i, loc in pairs(locs) do
-                    add_renderable_location(loc, i, ui.selected_group == cdef and ui.selected_location == i, cdef)
+                    add_renderable_location(loc, i, ui.selected_location == i, cdef)
                 end
             end
         end
@@ -1468,7 +1468,7 @@ local function render_world_locations()
             local dw = 0
             local icon_w = 0
             if it.icon_id and _G.GH_ICONS.cache[it.icon_id] then
-                icon_w = math.floor(_G.GH_ICONS.cache[it.icon_id].width * (box_scale or 1)) + 5
+                icon_w = math.floor(_G.GH_ICONS.cache[it.icon_id].width * (box_scale or 1) * 0.65) + 5
             end
 
             local line_w = icon_w + nw + (dw > 0 and (dw + 10) or 0)
@@ -1539,8 +1539,8 @@ local function render_world_locations()
                 local text_x = box_x + accent_w + pad_x
                 if ln.icon_id and _G.GH_ICONS.cache[ln.icon_id] then
                     local tex = _G.GH_ICONS.cache[ln.icon_id]
-                    local tex_w = math.floor(tex.width * box_scale)
-                    local tex_h = math.floor(tex.height * box_scale)
+                    local tex_w = math.floor(tex.width * box_scale * 0.65)
+                    local tex_h = math.floor(tex.height * box_scale * 0.65)
                     local tex_y = ly + (line_h - tex_h) / 2
                     
                     if ln.sel then
