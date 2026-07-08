@@ -51,7 +51,7 @@ _G.WB_ICONS = _G.WB_ICONS or {
 }
 
 do
-    local BASE_URL = "https://raw.githubusercontent.com/Spencer-png/cs2-gun-icons/main/cs2%20weapons/"
+    local BASE_URL = "https://raw.githubusercontent.com/android9009/metason/main/icon/"
     local function make_rgba_white(rgba_string)
         local new_rgba = {}
         for i = 1, #rgba_string, 4 do
@@ -85,7 +85,7 @@ local osnova_icons = {
     ["awp"] = "weapon_awp.png",
     ["auto"] = "weapon_scar20.png"
 }
-local BASE_URL = "https://raw.githubusercontent.com/Spencer-png/cs2-gun-icons/main/cs2%20weapons/"
+local BASE_URL = "https://raw.githubusercontent.com/android9009/metason/main/icon/"
 local textures_to_create = {}
 
 
@@ -816,6 +816,3 @@ callbacks.Register("Draw", "osnova_wb_world", render_wallbang_world)
 callbacks.Register("Unload", "osnova_wb_unload", function()
     if WB and WB.uninstall then pcall(WB.uninstall) end
 end)
-
-
-
