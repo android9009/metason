@@ -1174,11 +1174,8 @@ local function render_world_locations()
     if ui.selected_browser == "movement" then
         draw_near_aim_for_locs(osnova_get_locations_for(ui.current_map, "movement", ui.selected_movement_helper), nil)
     else
-        -- Draw aim points for every grenade group on current map. After reload this
-        -- prevents saved aim points from disappearing just because the UI defaulted
-        -- to Smoke while the saved point belongs to another grenade group.
-        for def, _ in pairs(ui.groups) do
-            local cdef = osnova_canon_def_early(def)
+        if ui.selected_group then
+            local cdef = osnova_canon_def_early(ui.selected_group)
             if osnova_grenade_feature_enabled(cdef) then
                 draw_near_aim_for_locs(osnova_get_locations_for(ui.current_map, "group", cdef), cdef)
             end
