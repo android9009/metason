@@ -53,7 +53,7 @@ local osnova_icons = {
 }
 _G.GH_ICONS.BASE_URL = "https://raw.githubusercontent.com/Spencer-png/cs2-gun-icons/main/cs2%20weapons/"
 local textures_to_create = {}
-local cached_textures = {}
+
 
 _G.GH_ICONS.make_rgba_white = function(rgba_string)
     local new_rgba = {}
@@ -1190,11 +1190,7 @@ local function render_world_locations()
 
     ui.render_skip_logged = ui.render_skip_logged or {}
     local function log_render_skip(loc, reason)
-        local key = tostring(loc) .. ":" .. tostring(reason)
-        if not ui.render_skip_logged[key] then
-            ui.render_skip_logged[key] = true
-            osnova_debug("render skip '" .. tostring(loc and loc.name or "?") .. "': " .. tostring(reason))
-        end
+        -- muted
     end
 
     local function add_renderable_location(loc, idx, is_selected, icon_id)
@@ -1263,7 +1259,7 @@ local function render_world_locations()
                     wx = loc.pos_x, wy = loc.pos_y, wz = loc.pos_z,
                     screen_x = screen_x, screen_y = screen_y,
                     dist = dist, alpha = alpha,
-                    is_nearby = is_nearby, is_selected = is_selected
+                    is_nearby = is_nearby, is_selected = is_selected, icon_id = icon_id
                 })
             else
                 if not screen_x or not screen_y then
@@ -1474,10 +1470,7 @@ local function render_world_locations()
             if it.icon_id and _G.GH_ICONS.cache[it.icon_id] then
                 icon_w = math.floor(_G.GH_ICONS.cache[it.icon_id].width * (box_scale or 1)) + 5
             end
-            local icon_w = 0
-            if it.icon_id and cached_textures[it.icon_id] then
-                icon_w = math.floor(cached_textures[it.icon_id].width * (box_scale or 1)) + 5
-            end
+
             local line_w = icon_w + nw + (dw > 0 and (dw + 10) or 0)
             if line_w > max_w then max_w = line_w end
 
@@ -1544,8 +1537,8 @@ local function render_world_locations()
                     draw.Color(170, 170, 170, cluster_alpha * line_alpha)
                 end
                 local text_x = box_x + accent_w + pad_x
-                if ln.icon_id and cached_textures[ln.icon_id] then
-                    local tex = cached_textures[ln.icon_id]
+                if ln.icon_id and _G.GH_ICONS.cache[ln.icon_id] then
+                    local tex = _G.GH_ICONS.cache[ln.icon_id]
                     local tex_w = math.floor(tex.width * box_scale)
                     local tex_h = math.floor(tex.height * box_scale)
                     local tex_y = ly + (line_h - tex_h) / 2
@@ -2755,12 +2748,7 @@ callbacks.Register("Draw", "osnova_gh_full", function()
 
 
     for id, data in pairs(textures_to_create) do
-        cached_textures[id] = {
-            texture = draw.CreateTexture(data.rgba, data.width, data.height),
-            width = data.width,
-            height = data.height
-        }
-        textures_to_create[id] = nil
+
     end
 
     local menu_active = gui.Reference("Menu"):IsActive()
