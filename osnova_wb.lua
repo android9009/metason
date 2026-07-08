@@ -54,7 +54,7 @@ local osnova_icons = {
 }
 local BASE_URL = "https://raw.githubusercontent.com/Spencer-png/cs2-gun-icons/main/cs2%20weapons/"
 local textures_to_create = {}
-local cached_textures = {}
+
 
 local function make_rgba_white(rgba_string)
     local new_rgba = {}
@@ -335,8 +335,8 @@ local function draw_world_label(sx, sy, text, r, g, b, alpha, scale, icon_id)
     local y1 = sy - (th + pad_y * 2) / 2
     local tex_w, tex_h = 0, 0
     local tex = nil
-    if icon_id and cached_textures[icon_id] then
-        tex = cached_textures[icon_id]
+    if icon_id and _G.WB_ICONS.cache[icon_id] then
+        tex = _G.WB_ICONS.cache[icon_id]
         tex_w = math.floor(tex.width * scale * 0.7)
         tex_h = math.floor(tex.height * scale * 0.7)
         if tex_w > 0 then tex_w = tex_w + 5 end
@@ -422,6 +422,16 @@ local function draw_wallbang_tracer(loc, alpha, r, g, b)
 end
 
 local function render_wallbang_world()
+
+    for id, data in pairs(_G.WB_ICONS.queue) do
+        _G.WB_ICONS.cache[id] = {
+            texture = draw.CreateTexture(data.rgba, data.width, data.height),
+            width = data.width,
+            height = data.height
+        }
+        _G.WB_ICONS.queue[id] = nil
+    end
+
     if not (WB.loaded and _G.OSNOVA_WALLBANG_ENABLED) then return end
     local origin = get_local_origin()
     if not origin then return end
