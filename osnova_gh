@@ -1864,8 +1864,36 @@ local function draw_listbox(x, y, w, h, items, mode)
         local name = items[i].name or tostring(items[i])
         if selected and ui.renaming and ui.rename_target == mode then name = ui.rename_buf .. "_" end
 
+        local text_x = x + 10
+        local tex = nil
+        
+        -- Get icon texture based on mode and items[i]
+        if mode == "group" and items[i].def then
+            local icon_id = items[i].def
+            if _G.GH_ICONS.cache[icon_id] then
+                tex = _G.GH_ICONS.cache[icon_id]
+            end
+        elseif mode == "location" then
+            -- Optional: we can draw the active group's icon next to location names too?
+            -- Actually, user asked for groups mainly, but let's see. For now just groups.
+        end
+
+        if tex then
+            local max_icon_h = 14
+            local scale = math.min(1.0, max_icon_h / tex.height)
+            local tex_w = math.floor(tex.width * scale)
+            local tex_h = math.floor(tex.height * scale)
+            
+            draw.Color(selected and 255 or 160, selected and 255 or 160, selected and 255 or 160, 255)
+            draw.SetTexture(tex.texture)
+            local tex_y = iy + math.floor((22 - tex_h) / 2)
+            draw.FilledRect(text_x, tex_y, text_x + tex_w, tex_y + tex_h)
+            draw.SetTexture(nil)
+            text_x = text_x + tex_w + 5
+        end
+
         draw.Color(selected and 255 or 160, selected and 255 or 160, selected and 255 or 160, 255)
-        draw.Text(x + 10, iy + 4, name)
+        draw.Text(text_x, iy + 4, name)
 
 
         if hover and input.IsButtonPressed(1) and not ui.active_combo and not ui._combo_blocked then
