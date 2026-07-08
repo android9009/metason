@@ -1158,21 +1158,21 @@ local function render_world_locations()
     -- is currently armed (the one inside the FOV cone, closest to centre)
     local fov_target = osnova_select_target(player_origin)
 
-    local function draw_near_aim_for_locs(locs)
+    local function draw_near_aim_for_locs(locs, current_icon_id)
         for _, loc in pairs(locs) do
             if loc.aim_x and loc.aim_y and loc.aim_z and loc.pos_x and loc.pos_y and loc.pos_z then
                 local pdx = player_origin.x - loc.pos_x
                 local pdy = player_origin.y - loc.pos_y
                 if math.sqrt(pdx * pdx + pdy * pdy) < 15 then
                     local msx, msy = client.WorldToScreen(Vector3(loc.pos_x, loc.pos_y, loc.pos_z))
-                    osnova_draw_aim_point({ loc = loc, alpha = 255, screen_x = msx, screen_y = msy, is_nearby = true, is_target = (loc == fov_target) }, player_origin, dt, pulse)
+                    osnova_draw_aim_point({ loc = loc, alpha = 255, screen_x = msx, screen_y = msy, is_nearby = true, is_target = (loc == fov_target), icon_id = current_icon_id }, player_origin, dt, pulse)
                 end
             end
         end
     end
 
     if ui.selected_browser == "movement" then
-        draw_near_aim_for_locs(osnova_get_locations_for(ui.current_map, "movement", ui.selected_movement_helper))
+        draw_near_aim_for_locs(osnova_get_locations_for(ui.current_map, "movement", ui.selected_movement_helper), nil)
     else
         -- Draw aim points for every grenade group on current map. After reload this
         -- prevents saved aim points from disappearing just because the UI defaulted
@@ -1180,7 +1180,7 @@ local function render_world_locations()
         for def, _ in pairs(ui.groups) do
             local cdef = osnova_canon_def_early(def)
             if osnova_grenade_feature_enabled(cdef) then
-                draw_near_aim_for_locs(osnova_get_locations_for(ui.current_map, "group", cdef))
+                draw_near_aim_for_locs(osnova_get_locations_for(ui.current_map, "group", cdef), cdef)
             end
         end
     end
@@ -4435,5 +4435,4 @@ callbacks.Register("Unload", "osnova_gh_autothrow_unload", osnova_gh_autothrow_c
 
 -- Initialize current locations
 sync_current_locations()
-
 
