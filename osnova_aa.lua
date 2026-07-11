@@ -108,7 +108,7 @@ MANUAL = {
 local VM = {}
 do
 	local ffi = rawget(_G, "ffi")
-	local VM_SIG = "E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? 84 C0 74 11 F3 0F 10 45 B0"
+	local VM_SIG = "E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? 84 C0 74 11 F3 0F 10 45 B0"  --[[UPDATE: E8-pattern near CalcViewmodelView 0xCA4E40 - verify manually after CS2 update]]
 	local page, match, origRel, ok = nil, nil, nil, false
 
 	local function r_i32(a) return ffi.cast("int32_t*", a)[0] end
