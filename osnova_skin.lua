@@ -110,7 +110,9 @@ do
     off.dwEntityList            = sig_rva(cb, "client.dll",  "48 89 0D ?? ?? ?? ?? E9 ?? ?? ?? ?? CC", 7)
     off.dwLocalPlayerController = sig_rva(cb, "client.dll",  "48 8B 05 ?? ?? ?? ?? 41 89 BE", 7)
     off.dwNetworkGameClient     = sig_rva(eb, "engine2.dll", "48 89 3D ?? ?? ?? ?? FF 87", 7)
-    off.dwNetworkGameClient_signOnState = sig_disp("engine2.dll", "44 8B 81 ?? ?? ?? ?? 48 8D 0D")
+    -- build 14165 dump does not include the old signOnState displacement pattern.
+    -- Leave nil so in_game() skips this optional gate instead of using a stale signature.
+    off.dwNetworkGameClient_signOnState = nil
     if not off.dwLocalPlayerController or not off.dwEntityList or not off.m_hMyWeapons then
         -- silent
     else
@@ -153,8 +155,9 @@ local sig = {
     set_mesh_mask  = "48 89 5C 24 ? 48 89 74 24 ? 57 48 83 EC ? 48 8D 99 ? ? ? ? 48 8B 71", -- CSkeletonInstance mesh mask
     regen_skins    = "48 83 EC ? E8 ? ? ? ? 48 85 C0 0F 84 ? ? ? ? 48 8B 10",            -- regenerate custom skins
 }
--- a + 5 + rel32 -> CBodyComponent::SetBodyGroup
-local SBG_SIG = "E8 ?? ?? ?? ?? EB 0C 48 8B CF"
+-- build 14165: raw CBodyComponent::SetBodyGroup / SetBodygroup entry.
+-- Old code resolved an E8 call-site; the current dump exposes the function start directly.
+local SBG_SIG = "85 D2 0F 88 ? ? ? ? 55 53 56 41 56 48 8B EC 48 83 EC 78"
 local fn, fnptr = {}, {}
 local function resolve()
     for name, pattern in pairs(sig) do
@@ -162,7 +165,7 @@ local function resolve()
     end
     if not fn.set_body_group then
         local a = mem.FindPattern(DLL, SBG_SIG)
-        if a and a ~= 0 then fn.set_body_group = a + 5 + r_i32(a + 1) end
+        if a and a ~= 0 then fn.set_body_group = a end
     end
     if fn.set_model       and not fnptr.set_model       then fnptr.set_model       = ffi.cast("void(*)(void*, const char*)", fn.set_model) end
     if fn.update_subclass and not fnptr.update_subclass then fnptr.update_subclass = ffi.cast("void(*)(void*)",              fn.update_subclass) end
@@ -4026,11 +4029,13 @@ local function rescan_models()
 end
 
 local g_IRS = nil
-local PRECACHE_SIG = "40 53 55 57 48 81 EC 80 00 00 00 48 8B 01 49 8B E8 48 8B FA"
+-- build 14165 dump attached by user does not contain a resourcesystem.dll Precache pattern.
+-- Keep custom-model precache disabled until a verified replacement is provided.
+local PRECACHE_SIG = nil
 local function resolve_model_fns()
     if fnptr.precache and g_IRS and fnptr.cbuf_insert then return true end
     model_ffi()
-    if not fn.precache then
+    if not fn.precache and PRECACHE_SIG then
         local a = mem.FindPattern("resourcesystem.dll", PRECACHE_SIG)
         if a and a ~= 0 then fn.precache = a end
     end
