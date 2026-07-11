@@ -100,110 +100,18 @@ MANUAL = {
 }
 
 -- ============================================================
--- viewmodel offset hook (ported from femka / femboytap)
--- an FFI trampoline on client.dll adds page+4/+8/+12 (x/y/z) to the viewmodel
--- position vector. uses ffi exposed on _G (same as femka). all in pcall so a
--- missing signature / no ffi just disables it instead of crashing the script.
+-- viewmodel offset hook
 -- ============================================================
+-- DISABLED for build 14165 update.
+-- The old code patched a specific E8 call-site. The attached ANDROMEDA dump
+-- provides raw CalcViewmodel / CalcViewmodelView signatures, but not that exact
+-- call-site. Patching a guessed call would be unsafe, so this feature is no-op
+-- until a verified E8 call-site signature is provided.
 local VM = {}
 do
-	local ffi = rawget(_G, "ffi")
-	local VM_SIG = "E8 ?? ?? ?? ?? 48 8B CB E8 ?? ?? ?? ?? 84 C0 74 11 F3 0F 10 45 B0"  --[[UPDATE: E8-pattern near CalcViewmodelView 0xCA4E40 - verify manually after CS2 update]]
-	local page, match, origRel, ok = nil, nil, nil, false
-
-	local function r_i32(a) return ffi.cast("int32_t*", a)[0] end
-	local function w_u8 (a, v) ffi.cast("uint8_t*", a)[0] = v end
-	local function w_i32(a, v) ffi.cast("int32_t*", a)[0] = v end
-	local function w_f32(a, v) ffi.cast("float*",   a)[0] = v end
-
-	local function le64(v)
-		local t = {}
-		for _ = 1, 8 do t[#t + 1] = v % 256; v = math.floor(v / 256) end
-		return t
-	end
-
-	local function alloc_near(target, size)
-		local gran = 0x10000
-		local base = target - (target % gran)
-		for i = 1, 0x8000 do
-			local lo, hi = base - i * gran, base + i * gran
-			if lo > 0x10000 then
-				local p = ffi.C.VirtualAlloc(ffi.cast("void*", lo), size, 0x3000, 0x40)
-				if p ~= nil then return p end
-			end
-			local p2 = ffi.C.VirtualAlloc(ffi.cast("void*", hi), size, 0x3000, 0x40)
-			if p2 ~= nil then return p2 end
-		end
-		return nil
-	end
-
-	local function install()
-		if type(ffi) ~= "table" then return false end
-		pcall(function() ffi.cdef [[
-			void* VirtualAlloc(void*, size_t, uint32_t, uint32_t);
-			int   VirtualProtect(void*, size_t, uint32_t, uint32_t*);
-			void* GetCurrentProcess(void);
-			int   FlushInstructionCache(void*, void*, size_t);
-		]] end)
-
-		local a = mem.FindPattern("client.dll", VM_SIG)
-		if not a or a == 0 then return false end
-		match = a
-		local orig = a + 5 + r_i32(a + 1)
-
-		local p = alloc_near(orig, 0x1000)
-		if p == nil then return false end
-		page = tonumber(ffi.cast("uintptr_t", p))
-		local code = page + 16
-
-		local b = { 0x53, 0x56, 0x48,0x83,0xEC,0x28, 0x48,0x89,0xD6, 0x48,0xB8 }
-		for _, v in ipairs(le64(orig)) do b[#b + 1] = v end
-		for _, v in ipairs({ 0xFF,0xD0, 0x48,0xBB }) do b[#b + 1] = v end
-		for _, v in ipairs(le64(page)) do b[#b + 1] = v end
-		for _, v in ipairs({
-			0x8B,0x0B, 0x85,0xC9, 0x74,0x2B,
-			0xF3,0x0F,0x10,0x4B,0x04, 0xF3,0x0F,0x58,0x0E, 0xF3,0x0F,0x11,0x0E,
-			0xF3,0x0F,0x10,0x4B,0x08, 0xF3,0x0F,0x58,0x4E,0x04, 0xF3,0x0F,0x11,0x4E,0x04,
-			0xF3,0x0F,0x10,0x4B,0x0C, 0xF3,0x0F,0x58,0x4E,0x08, 0xF3,0x0F,0x11,0x4E,0x08,
-			0x48,0x83,0xC4,0x28, 0x5E, 0x5B, 0xC3,
-		}) do b[#b + 1] = v end
-		for i = 0, #b - 1 do w_u8(code + i, b[i + 1]) end
-		w_i32(page, 0); w_f32(page + 4, 0); w_f32(page + 8, 0); w_f32(page + 12, 0)
-
-		local rel = code - (match + 5)
-		if rel < -2147483648 or rel > 2147483647 then return false end
-		origRel = r_i32(match + 1)
-		local old = ffi.new("uint32_t[1]")
-		ffi.C.VirtualProtect(ffi.cast("void*", match), 5, 0x40, old)
-		w_i32(match + 1, rel)
-		ffi.C.VirtualProtect(ffi.cast("void*", match), 5, old[0], old)
-		pcall(function() ffi.C.FlushInstructionCache(ffi.C.GetCurrentProcess(), ffi.cast("void*", match), 5) end)
-		return true
-	end
-
-	pcall(function() ok = install() end)
-
-	function VM.set(on, x, y, z)
-		if not ok or not page then return end
-		pcall(function()
-			w_i32(page, on and 1 or 0)
-			w_f32(page + 4, x or 0)
-			w_f32(page + 8, y or 0)
-			w_f32(page + 12, z or 0)
-		end)
-	end
-
-	function VM.uninstall()
-		if not (ok and match and origRel) then return end
-		pcall(function()
-			local old = ffi.new("uint32_t[1]")
-			ffi.C.VirtualProtect(ffi.cast("void*", match), 5, 0x40, old)
-			w_i32(match + 1, origRel)
-			ffi.C.VirtualProtect(ffi.cast("void*", match), 5, old[0], old)
-		end)
-	end
+    function VM.set(on, x, y, z) end
+    function VM.uninstall() end
 end
-pcall(function() callbacks.Register("Unload", function() pcall(VM.uninstall) end) end)
 
 -- ============================================================
 -- Matchmaking region changer (ported from femka, silent/no prints)
