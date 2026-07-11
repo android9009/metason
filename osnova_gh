@@ -4465,3 +4465,4 @@ callbacks.Register("Unload", "osnova_gh_autothrow_unload", osnova_gh_autothrow_c
 -- Initialize current locations
 sync_current_locations()
 
+
