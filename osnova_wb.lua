@@ -816,3 +816,4 @@ callbacks.Register("Draw", "osnova_wb_world", render_wallbang_world)
 callbacks.Register("Unload", "osnova_wb_unload", function()
     if WB and WB.uninstall then pcall(WB.uninstall) end
 end)
+
